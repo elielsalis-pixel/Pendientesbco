@@ -29,7 +29,13 @@ SERVICIOS Y DEPENDENCIAS
 - Avisos: notificaciones locales programadas por el service worker. No es push de servidor.
 
 PRUEBAS
-- No hay (verificado el 2026-11-18).
+- Carpeta tests/ (agregada el 2026-11-18). Se corren con: sh tests/verificar.sh (hace falta Node 20 o más nuevo).
+- 25 pruebas con datos inventados: 24 pasan, 1 marcada como falla conocida.
+- Cubren: chip de vencimiento, borrado a los 30 días, fechas y texto del reporte, avisos de vencimiento.
+- No cubren: pantallas, exportación a Word, voz, pantalla de configuración ni el service worker (solo se chequea la sintaxis).
+- Falla conocida: fechaISO() usa hora UTC; después de las 21:00 (Argentina) da el día siguiente, y afecta el nombre del Word y la fecha del respaldo.
+- Pendiente de revisar: una tarea "listo" sin fecha de finalización se borra al abrir la app (hoy la app siempre pone la fecha).
+- No se probó en un celular real.
 
 DECISIONES DE ELIEL (con el porqué)
 - 2026-11-17: la app maneja tareas genéricas, sin datos del banco.
@@ -40,10 +46,10 @@ VENCIMIENTOS
 - Hosting en Netlify: Eliel cree que los créditos se renovaron y que sigue activo. La URL respondía el 2026-11-18.
 
 PRÓXIMO PASO
-- Agregar pruebas (carpeta tests/, con datos ficticios).
+- Auditoría completa de la app con desarrollo-limpio (informe por gravedad; no se cambia nada sin OK de Eliel). Incluye arreglar la falla conocida de fechaISO().
 
 PENDIENTES (ideas nuevas: no se ejecutan hasta que la versión actual tenga un resultado real)
-- Auditoría completa de la app.
+- Ninguno anotado.
 
 A CONFIRMAR
 - Chat de origen de la app: Eliel no lo recuerda (quizás lo borró). Se trabaja desde el código.

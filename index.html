@@ -1218,25 +1218,33 @@ const SK = {
   secciones: 'pbc_secciones',
 };
 
+/* Datos dañados ya avisados en esta sesión (clave + contenido), para no repetir el aviso en cada lectura. */
+const _danadosAvisados = new Set();
+
 const LS = {
-  /* Si lo guardado está dañado, se conserva una copia (clave + "__danado")
-     antes de que el próximo guardado lo pise, y se avisa una sola vez. */
-  get(k, def = null) {
+  /* `valido` comprueba la forma del dato leído. Si no se puede leer o no tiene la forma
+     esperada, se conserva una copia (clave + "__danado", reemplaza a la anterior) antes de
+     que el próximo guardado lo pise, y se avisa una vez por cada dato dañado distinto. */
+  get(k, def = null, valido = () => true) {
     let v;
     try { v = localStorage.getItem(k); }
     catch { return def; }
     if (v === null) return def;
-    try { return JSON.parse(v); }
-    catch {
-      try {
-        if (localStorage.getItem(k + '__danado') === null) {
-          localStorage.setItem(k + '__danado', v);
-          alert('Los datos guardados en este celular estaban dañados y no se pudieron leer. ' +
-                'Se conservó una copia aparte antes de seguir.');
-        }
-      } catch { /* sin espacio o sin permiso: ya se muestra el aviso de guardado */ }
-      return def;
+
+    let dato;                                   /* JSON.parse nunca devuelve undefined */
+    try { dato = JSON.parse(v); } catch { dato = undefined; }
+    if (dato !== undefined && valido(dato)) return dato;
+
+    const huella = k + '|' + v;
+    if (!_danadosAvisados.has(huella)) {
+      _danadosAvisados.add(huella);
+      let copiado = true;
+      try { localStorage.setItem(k + '__danado', v); } catch { copiado = false; }
+      alert('Los datos guardados en este celular estaban dañados y no se pudieron leer.' +
+            (copiado ? ' Se conservó una copia aparte antes de seguir.'
+                     : ' No hubo lugar para guardar una copia.'));
     }
+    return def;
   },
   /* Devuelve true si se guardó. Con avisar=true, un fallo se le muestra al usuario. */
   set(k, v, avisar = false) {
@@ -1251,13 +1259,15 @@ const LS = {
   },
 };
 
-const getTareas    = ()  => LS.get(SK.tareas, []);
+const esObjeto = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+const getTareas    = ()  => LS.get(SK.tareas, [], Array.isArray);
 const saveTareas   = (t) => LS.set(SK.tareas, t, true);
-const getUsuario   = ()  => LS.get(SK.usuario, null);
+const getUsuario   = ()  => LS.get(SK.usuario, null, esObjeto);
 const saveUsuario  = (u) => LS.set(SK.usuario, u, true);
-const getVista     = ()  => LS.get(SK.vista, 'urgencia');
+const getVista     = ()  => LS.get(SK.vista, 'urgencia', v => ['urgencia', 'empresa', 'fecha'].includes(v));
 const saveVista    = (v) => LS.set(SK.vista, v);
-const getSecciones = ()  => LS.get(SK.secciones, {});
+const getSecciones = ()  => LS.get(SK.secciones, {}, esObjeto);
 const saveSecciones= (s) => LS.set(SK.secciones, s);
 
 function newId() {
@@ -1344,10 +1354,20 @@ function esc(s) {
 }
 
 /* Serializa un valor JS para usarlo como argumento dentro de un atributo HTML
-   onclick="fn(qa(val))": JSON.stringify + escapa las comillas dobles con &quot;
-   para que no rompan el delimitador del atributo. */
+   onclick="fn(qa(val))". El navegador decodifica las entidades del atributo ANTES de
+   ejecutar el JS, así que hay que escapar también el "&" (primero), además de las
+   comillas dobles: si no, un texto como  &quot;);alert(1);//  se ejecutaría. */
 function qa(v) {
-  return JSON.stringify(v).replace(/"/g, '&quot;');
+  return JSON.stringify(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+/* Escapado y desescapado de texto para XML (propiedades del .docx). Son inversos exactos:
+   el desescapado va en una sola pasada para que "&amp;lt;" vuelva a ser "&lt;" y no "<". */
+function escaparXML(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function desescaparXML(s) {
+  return String(s ?? '').replace(/&(amp|lt|gt|quot);/g, (_, n) => ({ amp: '&', lt: '<', gt: '>', quot: '"' }[n]));
 }
 
 const URG_COLOR = { alta: 'var(--red)', media: 'var(--orange)', baja: 'var(--green)' };
@@ -1985,7 +2005,7 @@ async function generarDOCX(tareas, usuario) {
   const activas = tareas.filter(t => t.estado !== 'listo');
 
   /* ── Helpers XML ── */
-  const x = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const x = escaparXML;
 
   /* Párrafo OOXML con un único run de texto */
   function p(text, { bold=false, italic=false, color='', size=22, indent=0, before=0, after=120 } = {}) {
@@ -2040,8 +2060,7 @@ async function generarDOCX(tareas, usuario) {
     usuario: { nombre: usuario.nombre, cargo: usuario.cargo },
     tareas,
   });
-  const respaldoXMLesc = respaldoJSON
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const respaldoXMLesc = escaparXML(respaldoJSON);
 
   zip.file('[Content_Types].xml', [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -2165,6 +2184,12 @@ function setupReporte() {
         clearInterval(_pollDocx);
       }
     }, 500);
+
+    /* Si la librería no se pudo descargar (por ejemplo, primera vez sin conexión): dejar de esperar y decirlo */
+    document.addEventListener('docxError', () => {
+      clearInterval(_pollDocx);
+      rowDocx.title = 'No se pudo cargar el módulo de archivos. Revisá la conexión y recargá la app.';
+    }, { once: true });
   }
 
   function chkSet(k, v) {
@@ -2421,6 +2446,12 @@ function procesarRespaldo(contenido) {
     ? `\n(${descartadas} con datos inválidos no se importan.)` : '';
   if (!confirm(`Se encontraron ${n} tarea${n !== 1 ? 's' : ''}.${aviso}\n¿Importar y reemplazar las tareas actuales?`)) return;
 
+  /* Copia de lo que había (clave + "__previo"), por si se importó el archivo equivocado. */
+  try {
+    const previo = localStorage.getItem(SK.tareas);
+    if (previo !== null) localStorage.setItem(SK.tareas + '__previo', previo);
+  } catch { /* sin lugar para la copia: el guardado de abajo avisa si tampoco puede guardar */ }
+
   if (!saveTareas(tareas)) return;
   const usuario = mezclarUsuario(getUsuario(), data.usuario);
   if (usuario) saveUsuario(usuario);
@@ -2483,10 +2514,7 @@ async function procesarRespaldoDOCX(file) {
   const match = xml.match(/<vt:lpwstr>([\s\S]*?)<\/vt:lpwstr>/);
   if (!match) throw new Error('sin datos de respaldo');
 
-  const jsonStr = match[1]
-    .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');
-
-  procesarRespaldo(jsonStr);
+  procesarRespaldo(desescaparXML(match[1]));
 }
 
 /* ════════════════════════════════════════════════════════════

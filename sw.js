@@ -18,13 +18,19 @@ self.addEventListener('activate', e => e.waitUntil(
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
 
+  let copiaGuardada = Promise.resolve();
   const deLaRed = fetch(e.request).then(res => {
     if (res.ok) {
       const copia = res.clone();
-      caches.open(CACHE).then(c => c.put(e.request, copia));
+      copiaGuardada = caches.open(CACHE)
+        .then(c => c.put(e.request, copia))
+        .catch(err => console.error('No se pudo guardar la copia sin conexión:', err));
     }
     return res;
   });
+
+  /* waitUntil: el navegador no apaga el service worker antes de terminar de guardar la copia. */
+  e.waitUntil(deLaRed.then(() => copiaGuardada, () => {}));
 
   const conLimite = Promise.race([
     deLaRed,

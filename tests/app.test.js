@@ -415,3 +415,113 @@ test('Word: el nombre del archivo usa la fecha local (a las 22:30 sigue siendo e
   await app.generarDOCX([], USUARIO_CON_MAILS);
   assert.deepEqual(descargas, ['pendientes-2026-11-18.docx']);
 });
+
+/* ───────────── Vuelta 2: atributos HTML, escapado del Word, datos dañados ───────────── */
+/* Lo que hace un navegador con un atributo HTML: decodifica las entidades UNA vez antes de usar el valor. */
+const comoNavegador = s => s.replace(/&(quot|amp|lt|gt|#39);/g, (_, n) => ({ quot: '"', amp: '&', lt: '<', gt: '>', '#39': "'" }[n]));
+
+const TEXTOS_DIFICILES = [
+  'Pérez & Hijos', 'Acme&quot;);window.__pwned=1;//', '&amp;quot;', '"comillas"', "O'Brien", '<b>x</b>',
+  '&lt;b&gt; & &quot;monto&quot;', 'a\\b', 'línea1\nlínea2', '日本語 😀', '&', '&&&', '&#39;',
+];
+
+test('qa(): lo que recibe la función en el onclick es EXACTAMENTE el texto original (incluidas entidades)', () => {
+  const { app } = cargarApp();
+  for (const t of TEXTOS_DIFICILES) {
+    assert.equal(JSON.parse(comoNavegador(app.qa(t))), t, `falló con: ${t}`);
+  }
+});
+
+test('qa(): un texto con entidades no puede cerrar el atributo ni agregar código', () => {
+  const { app } = cargarApp();
+  const ejecutado = 'App.toggleSec(' + comoNavegador(app.qa('emp::Acme&quot;);window.__pwned=1;//')) + ')';
+  assert.equal(ejecutado, 'App.toggleSec("emp::Acme&quot;);window.__pwned=1;//")');
+});
+
+test('vistas: cada onclick es exactamente UNA llamada con UNA cadena (empresas e ids con entidades)', () => {
+  const { app } = cargarApp();
+  const mala = 'X&quot;);window.__pwned=1;//';
+  const tareas = [tarea({ id: mala, empresa: mala, fechaVenc: '2026-12-01' })];
+  const sec = {};
+  let revisados = 0;
+  for (const html of [app.renderUrgencia(tareas, sec), app.renderEmpresa(tareas, sec), app.renderFecha(tareas, sec)]) {
+    for (const m of html.matchAll(/onclick="([^"]*)"/g)) {
+      const codigo = comoNavegador(m[1]);
+      const llamada = /^App\.(\w+)\((.*)\)$/.exec(codigo);
+      assert.ok(llamada, `no es una sola llamada: ${codigo}`);
+      const argumento = JSON.parse(llamada[2]);          /* si hubiera código inyectado, esto fallaría */
+      assert.equal(typeof argumento, 'string');
+      revisados++;
+    }
+  }
+  assert.ok(revisados >= 6, `se revisaron ${revisados} atributos`);
+});
+
+test('XML del Word: escapar y desescapar son inversos exactos con cualquier texto', () => {
+  const { app } = cargarApp();
+  for (const t of TEXTOS_DIFICILES) {
+    assert.equal(app.desescaparXML(app.escaparXML(t)), t, `falló con: ${t}`);
+  }
+  assert.equal(app.escaparXML(undefined), '');
+  assert.equal(app.desescaparXML('&amp;lt;'), '&lt;', 'no debe decodificar dos veces');
+});
+
+test('Word: una descripción con texto tipo "&quot;" o "&lt;" se exporta e importa sin alterarse', async () => {
+  const falso = jszipFalso();
+  falso.JSZip.loadAsync = async () => ({
+    file: n => (falso.archivos[n] ? { async: async () => falso.archivos[n] } : null),
+  });
+  const difícil = 'revisar campo &quot;monto&quot; y &lt;b&gt; & "comillas" <tag>';
+  const origen = cargarApp({ JSZip: falso.JSZip });
+  await origen.app.generarDOCX([tarea({ id: 'a', empresa: 'Cliente Demo SA', descripcion: difícil })], USUARIO_CON_MAILS);
+
+  const destino = conAvisos({ JSZip: falso.JSZip });
+  await destino.app.procesarRespaldoDOCX({ name: 'r.docx', arrayBuffer: async () => new ArrayBuffer(0) });
+  assert.equal(destino.almacen.leer('pbc_tareas')[0].descripcion, difícil);
+});
+
+test('lectura: si lo guardado se daña OTRA VEZ con otro contenido, se avisa de nuevo y la copia se actualiza', () => {
+  const { app, almacen, avisos } = conAvisos();
+  almacen.setItem('pbc_tareas', '{primero');
+  ev(app, 'getTareas()');
+  almacen.setItem('pbc_tareas', '[{"id":"ok"}]');
+  assert.equal(ev(app, 'getTareas()').length, 1);
+  almacen.setItem('pbc_tareas', '{segundo');
+  ev(app, 'getTareas()');
+  assert.equal(avisos.length, 2);
+  assert.equal(almacen.getItem('pbc_tareas__danado'), '{segundo');
+});
+
+test('lectura: datos que son JSON válido pero con otra forma ("null", objeto, texto) no rompen la app', () => {
+  for (const raro of ['null', '{}', '"hola"', '5']) {
+    const { app, almacen, avisos } = conAvisos();
+    almacen.setItem('pbc_tareas', raro);
+    assert.deepEqual(plano(ev(app, 'getTareas()')), [], `tareas = ${raro}`);
+    assert.equal(almacen.getItem('pbc_tareas__danado'), raro);
+    assert.equal(avisos.length, 1);
+  }
+  const { app, almacen } = conAvisos();
+  almacen.setItem('pbc_usuario', '[1,2]');
+  almacen.setItem('pbc_vista', '"otra"');
+  almacen.setItem('pbc_secciones', 'null');
+  assert.equal(ev(app, 'getUsuario()'), null);
+  assert.equal(ev(app, 'getVista()'), 'urgencia');
+  assert.deepEqual(plano(ev(app, 'getSecciones()')), {});
+});
+
+test('lectura: con datos válidos no hay avisos ni copias', () => {
+  const { app, almacen, avisos } = conAvisos({ tareas: [tarea()], usuario: { nombre: 'Usuario Demo' } });
+  assert.equal(ev(app, 'getTareas()').length, 1);
+  assert.equal(ev(app, 'getUsuario()').nombre, 'Usuario Demo');
+  assert.deepEqual(avisos, []);
+  assert.equal(almacen.getItem('pbc_tareas__danado'), null);
+});
+
+test('importar: antes de reemplazar se guarda una copia de las tareas que había', () => {
+  const previas = [tarea({ id: 'previa-1' }), tarea({ id: 'previa-2' })];
+  const c = conAvisos({ tareas: previas });
+  const crudoAntes = c.almacen.getItem('pbc_tareas');
+  c.app.procesarRespaldo(respaldo([tarea({ id: 'nueva' })]));
+  assert.deepEqual(c.almacen.leer('pbc_tareas').map(t => t.id), ['nueva']);
+  assert.equal(c.almacen.getItem('pbc_tareas__previo'), crudoAntes);
+});

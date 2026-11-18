@@ -12,14 +12,14 @@ const vm     = require('node:vm');
 const CODIGO = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
 
 /* Cachés en memoria. Cada "respuesta" es un objeto con ok y clone(). */
-function crearCaches(inicial = {}) {
+function crearCaches(inicial = {}, { falloAlGuardar = false } = {}) {
   const almacen = new Map(Object.entries(inicial).map(([n, e]) => [n, new Map(Object.entries(e))]));
   return {
     almacen,
     open: async nombre => {
       if (!almacen.has(nombre)) almacen.set(nombre, new Map());
       const c = almacen.get(nombre);
-      return { put: async (req, res) => { c.set(req.url, res); } };
+      return { put: async (req, res) => { if (falloAlGuardar) throw new Error('QuotaExceededError'); c.set(req.url, res); } };
     },
     match: async req => {
       for (const c of almacen.values()) if (c.has(req.url)) return c.get(req.url);
@@ -33,7 +33,7 @@ function crearCaches(inicial = {}) {
 const respuesta = (etiqueta, ok = true) => ({ etiqueta, ok, clone() { return this; } });
 
 /* Carga sw.js y devuelve los manejadores que registró. */
-function cargarSW({ caches, fetch }) {
+function cargarSW({ caches, fetch, consola = console }) {
   const manejadores = {};
   const self = {
     addEventListener: (tipo, f) => { manejadores[tipo] = f; },
@@ -41,7 +41,7 @@ function cargarSW({ caches, fetch }) {
     registration: { scope: 'https://demo.example/' },
   };
   const entorno = {
-    self, caches, fetch,
+    self, caches, fetch, console: consola,
     clients: { claim: async () => {}, matchAll: async () => [], openWindow: async () => {} },
     Response: { error: () => respuesta('error', false) },
     Promise, Error,
@@ -53,7 +53,7 @@ function cargarSW({ caches, fetch }) {
 }
 
 function pedir(manejadores, { url = 'https://demo.example/index.html', method = 'GET' } = {}) {
-  const e = { request: { url, method }, respondWith(p) { this.promesa = p; } };
+  const e = { request: { url, method }, esperas: [], respondWith(p) { this.promesa = p; }, waitUntil(p) { this.esperas.push(p); } };
   manejadores.fetch(e);
   return e;
 }
@@ -119,4 +119,33 @@ test('sw: ya no tiene temporizadores de avisos a una hora fija', () => {
   const { manejadores } = cargarSW({ caches: crearCaches(), fetch: async () => respuesta('x') });
   assert.equal(manejadores.message, undefined);
   assert.equal(typeof manejadores.notificationclick, 'function');
+});
+
+test('sw: la copia se guarda dentro de waitUntil (el navegador no apaga el service worker a mitad)', async () => {
+  const caches = crearCaches();
+  const { manejadores } = cargarSW({ caches, fetch: async () => respuesta('nueva') });
+  const e = pedir(manejadores);
+  await e.promesa;
+  assert.equal(e.esperas.length, 1);
+  await Promise.all(e.esperas);
+  assert.equal(caches.almacen.get('pbc-v8').get('https://demo.example/index.html').etiqueta, 'nueva');
+});
+
+test('sw: si no se puede guardar la copia (sin espacio), igual responde con la versión de la red', async () => {
+  const errores = [];
+  const caches = crearCaches({}, { falloAlGuardar: true });
+  const { manejadores } = cargarSW({ caches, fetch: async () => respuesta('nueva'), consola: { error: (...a) => errores.push(a.join(' ')) } });
+  const e = pedir(manejadores);
+  assert.equal((await e.promesa).etiqueta, 'nueva');
+  await Promise.all(e.esperas);
+  assert.equal(errores.length, 1);
+  assert.match(errores[0], /No se pudo guardar la copia/);
+});
+
+test('sw: sin conexión, waitUntil no rompe nada (no queda ninguna promesa rechazada)', async () => {
+  const caches = crearCaches({ 'pbc-v8': { 'https://demo.example/index.html': respuesta('guardada') } });
+  const { manejadores } = cargarSW({ caches, fetch: async () => { throw new TypeError('sin red'); } });
+  const e = pedir(manejadores);
+  await e.promesa;
+  await assert.doesNotReject(Promise.all(e.esperas));
 });

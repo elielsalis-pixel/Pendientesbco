@@ -6,51 +6,58 @@ DÓNDE ESTÁ
 - Rama de trabajo y rama publicada: main (única rama). Hosting: Netlify conectado a GitHub (según Eliel; la rama publicada no está verificada).
 - URL: https://pendientesbco.netlify.app (respondía el 2026-11-18)
 - Archivos principales:
-  - index.html: toda la app (pantallas, estilos y lógica), unas 2700 líneas
-  - sw.js: service worker (caché sin conexión y avisos programados)
+  - index.html: toda la app (pantallas, estilos y lógica)
+  - sw.js: service worker (copia para usar sin conexión)
+  - _headers: encabezados de seguridad que aplica Netlify (política de contenido, nosniff, sin referrer)
+  - tests/: pruebas automáticas
+- REGLA AL TOCAR index.html O sw.js: subir el número CACHE de sw.js (hoy pbc-v8). Con el service worker actual igual se baja la versión nueva en cada apertura con red, pero el número de versión limpia las copias viejas.
 
 QUÉ TIENE HOY
-- Tareas por empresa con urgencia, estado (pendiente, en curso, listo), nota y fecha de vencimiento
+- Tareas por empresa con urgencia, estado (pendiente, en curso, listo), nota y fecha de vencimiento (hora opcional)
 - Vistas por urgencia, por empresa y por fecha
-- Las tareas terminadas se borran solas a los 30 días
+- Las tareas terminadas se borran solas a los 30 días (una "listo" sin fecha de finalización empieza a contar desde hoy)
 - Reporte por mail (abre la app de correo del celular) y exportación a Word (.docx)
-- Avisos de vencimiento con notificaciones del celular
-- PWA instalable
+- Importar respaldo (.json o .docx): se validan y limpian los datos; solo toma de él nombre y cargo; los mails del celular no se tocan
+- Aviso al abrir la app (y al guardar una tarea) si hay tareas vencidas o que vencen hoy. NO hay avisos a una hora fija ni "avisar antes": se quitaron el 2026-11-18 porque sin servidor de notificaciones el navegador no los garantiza.
+- Si el celular no deja guardar, la app avisa y deja el formulario abierto; si lo guardado está dañado, conserva una copia (clave pbc_tareas__danado) y avisa
+- PWA instalable; funciona sin conexión con la última copia guardada
 
 DATOS QUE GUARDA
 - Solo en el navegador del celular (localStorage): tareas, datos del usuario (nombre, cargo y tres mails), vista elegida y secciones abiertas. Sin servidor, sin Firebase, sin nube.
 - Quién puede leerlos: quien use ese navegador. No tiene PIN ni bloqueo.
 - Campo Empresa: texto libre con nombre corto.
+- El respaldo oculto dentro del Word lleva nombre, cargo y todas las tareas (también las terminadas), y ningún mail.
 - El repo no contiene datos de nadie: solo código.
 
 SERVICIOS Y DEPENDENCIAS
 - Netlify (hosting)
-- Librería JSZip 3.10.1 cargada desde cdn.jsdelivr.net (solo para exportar a Word)
-- Avisos: notificaciones locales programadas por el service worker. No es push de servidor.
+- Librería JSZip 3.10.1 cargada desde cdn.jsdelivr.net con huella de integridad (SRI, verificada contra el paquete oficial de npm); solo para exportar e importar Word
+- Política de seguridad (_headers): solo permite scripts propios, los scripts en línea de la app y jsdelivr. Si algún día se agrega otro servicio externo, hay que sumarlo ahí.
 
 PRUEBAS
-- Carpeta tests/ (agregada el 2026-11-18). Se corren con: sh tests/verificar.sh (hace falta Node 20 o más nuevo).
-- 25 pruebas con datos inventados: 24 pasan, 1 marcada como falla conocida.
-- Cubren: chip de vencimiento, borrado a los 30 días, fechas y texto del reporte, avisos de vencimiento.
-- No cubren: pantallas, exportación a Word, voz, pantalla de configuración ni el service worker (solo se chequea la sintaxis).
-- Falla conocida: fechaISO() usa hora UTC; después de las 21:00 (Argentina) da el día siguiente, y afecta el nombre del Word y la fecha del respaldo.
-- Pendiente de revisar: una tarea "listo" sin fecha de finalización se borra al abrir la app (hoy la app siempre pone la fecha).
+- Se corren con: sh tests/verificar.sh (hace falta Node 20 o más nuevo). Última corrida: 46 de 46 pasan (2026-11-18).
+- Datos inventados ("Cliente Demo SA"). Cubren: chip de vencimiento, borrado a los 30 días, fechas y texto del reporte, aviso al abrir, guardado y datos dañados, importación, Word sin mails, service worker (red primero, sin conexión, red lenta, versiones viejas).
+- No cubren: pantallas, voz, pantalla de configuración. Una prueba en Chromium real (2026-11-18, fuera del repo) confirmó que la política de seguridad no rompe la app, el alta de tareas, la descarga del Word, la importación, el uso sin conexión y la llegada de una versión nueva.
 - No se probó en un celular real.
 
 DECISIONES DE ELIEL (con el porqué)
 - 2026-11-17: la app maneja tareas genéricas, sin datos del banco.
 - 2026-11-18: se mantienen el título y los textos actuales del repo.
+- 2026-11-18: el respaldo del Word no lleva mails (regla de no incluir datos sensibles en backups). Consecuencia: al restaurar en un celular nuevo hay que cargar los mails a mano.
+- 2026-11-18: sin avisos a hora fija; solo el aviso al abrir (un servidor de notificaciones es otro servicio y otro costo).
 
 VENCIMIENTOS
 - Ninguno anotado en el código (no hay claves ni reglas de base de datos).
 - Hosting en Netlify: Eliel cree que los créditos se renovaron y que sigue activo. La URL respondía el 2026-11-18.
 
 PRÓXIMO PASO
-- Auditoría completa de la app con desarrollo-limpio (informe por gravedad; no se cambia nada sin OK de Eliel). Incluye arreglar la falla conocida de fechaISO().
+- Probar en el celular el checklist de la auditoría y mandar todos los errores juntos.
 
 PENDIENTES (ideas nuevas: no se ejecutan hasta que la versión actual tenga un resultado real)
-- Ninguno anotado.
+- Una sección de urgencia que estuvo vacía queda plegada aunque después reciba tareas (comportamiento que ya tenía la app; cambia cómo se ve, necesita decisión).
+- Funciones largas (Word, configuración, reporte, voz): no se tocan sin pruebas de pantalla.
 
 A CONFIRMAR
 - Chat de origen de la app: Eliel no lo recuerda (quizás lo borró). Se trabaja desde el código.
-- Si los avisos de vencimiento suenan con el celular bloqueado (no verificado).
+- Que Netlify aplique el archivo _headers (se ve en las herramientas del navegador, pestaña Red).
+- Que en el celular el aviso al abrir aparezca con el permiso de notificaciones activado.

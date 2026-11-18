@@ -1,0 +1,50 @@
+ESTADO: PENDIENTES BCO (actualizado 2026-11-18)
+Para retomar en un chat nuevo sin releer la conversación anterior.
+
+DÓNDE ESTÁ
+- Repo: elielsalis-pixel/Pendientesbco (público)
+- Rama de trabajo y rama publicada: main (única rama). Hosting: Netlify conectado a GitHub (según Eliel; la rama publicada no está verificada).
+- URL: https://pendientesbco.netlify.app (respondía el 2026-11-18)
+- Archivos principales:
+  - index.html: toda la app (pantallas, estilos y lógica), unas 2700 líneas
+  - sw.js: service worker (caché sin conexión y avisos programados)
+
+QUÉ TIENE HOY
+- Tareas por empresa con urgencia, estado (pendiente, en curso, listo), nota y fecha de vencimiento
+- Vistas por urgencia, por empresa y por fecha
+- Las tareas terminadas se borran solas a los 30 días
+- Reporte por mail (abre la app de correo del celular) y exportación a Word (.docx)
+- Avisos de vencimiento con notificaciones del celular
+- PWA instalable
+
+DATOS QUE GUARDA
+- Solo en el navegador del celular (localStorage): tareas, datos del usuario (nombre, cargo y tres mails), vista elegida y secciones abiertas. Sin servidor, sin Firebase, sin nube.
+- Quién puede leerlos: quien use ese navegador. No tiene PIN ni bloqueo.
+- Campo Empresa: texto libre con nombre corto.
+- El repo no contiene datos de nadie: solo código.
+
+SERVICIOS Y DEPENDENCIAS
+- Netlify (hosting)
+- Librería JSZip 3.10.1 cargada desde cdn.jsdelivr.net (solo para exportar a Word)
+- Avisos: notificaciones locales programadas por el service worker. No es push de servidor.
+
+PRUEBAS
+- No hay (verificado el 2026-11-18).
+
+DECISIONES DE ELIEL (con el porqué)
+- 2026-11-17: la app maneja tareas genéricas, sin datos del banco.
+- 2026-11-18: se mantienen el título y los textos actuales del repo.
+
+VENCIMIENTOS
+- Ninguno anotado en el código (no hay claves ni reglas de base de datos).
+- Hosting en Netlify: Eliel cree que los créditos se renovaron y que sigue activo. La URL respondía el 2026-11-18.
+
+PRÓXIMO PASO
+- Agregar pruebas (carpeta tests/, con datos ficticios).
+
+PENDIENTES (ideas nuevas: no se ejecutan hasta que la versión actual tenga un resultado real)
+- Auditoría completa de la app.
+
+A CONFIRMAR
+- Chat de origen de la app: Eliel no lo recuerda (quizás lo borró). Se trabaja desde el código.
+- Si los avisos de vencimiento suenan con el celular bloqueado (no verificado).

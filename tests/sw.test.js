@@ -149,3 +149,24 @@ test('sw: sin conexión, waitUntil no rompe nada (no queda ninguna promesa recha
   await e.promesa;
   await assert.doesNotReject(Promise.all(e.esperas));
 });
+
+test('sw: una respuesta redirigida (wifi con página de ingreso) no pisa la copia guardada', async () => {
+  const caches = crearCaches({ 'pbc-v8': { 'https://demo.example/index.html': respuesta('buena') } });
+  const redirigida = { ...respuesta('portal'), redirected: true, clone() { return this; } };
+  const { manejadores } = cargarSW({ caches, fetch: async () => redirigida });
+  const e = pedir(manejadores);
+  await e.promesa;
+  await Promise.all(e.esperas);
+  assert.equal(caches.almacen.get('pbc-v8').get('https://demo.example/index.html').etiqueta, 'buena');
+});
+
+test('sw: si el servidor responde con error y hay copia guardada, se muestra la copia', async () => {
+  const caches = crearCaches({ 'pbc-v8': { 'https://demo.example/index.html': respuesta('buena') } });
+  const { manejadores } = cargarSW({ caches, fetch: async () => respuesta('error 500', false) });
+  assert.equal((await pedir(manejadores).promesa).etiqueta, 'buena');
+});
+
+test('sw: si el servidor responde con error y no hay copia, se devuelve ese error (no se inventa nada)', async () => {
+  const { manejadores } = cargarSW({ caches: crearCaches(), fetch: async () => respuesta('error 500', false) });
+  assert.equal((await pedir(manejadores).promesa).etiqueta, 'error 500');
+});

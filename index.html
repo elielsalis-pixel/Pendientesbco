@@ -1261,7 +1261,11 @@ const LS = {
 
 const esObjeto = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-const getTareas    = ()  => LS.get(SK.tareas, [], Array.isArray);
+/* Una tarea guardada sirve si tiene lo que la pantalla necesita para dibujarla. */
+const tareaLeible = t => esObjeto(t) && typeof t.empresa === 'string' && typeof t.descripcion === 'string'
+  && ['alta', 'media', 'baja'].includes(t.urgencia) && ['pendiente', 'curso', 'listo'].includes(t.estado);
+
+const getTareas    = ()  => LS.get(SK.tareas, [], a => Array.isArray(a) && a.every(tareaLeible));
 const saveTareas   = (t) => LS.set(SK.tareas, t, true);
 const getUsuario   = ()  => LS.get(SK.usuario, null, esObjeto);
 const saveUsuario  = (u) => LS.set(SK.usuario, u, true);
@@ -1364,7 +1368,8 @@ function qa(v) {
 /* Escapado y desescapado de texto para XML (propiedades del .docx). Son inversos exactos:
    el desescapado va en una sola pasada para que "&amp;lt;" vuelva a ser "&lt;" y no "<". */
 function escaparXML(s) {
-  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  /* Los caracteres de control (salvo tab y salto de línea) no son válidos en XML: Word rechazaría el archivo. */
+  return String(s ?? '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 function desescaparXML(s) {
   return String(s ?? '').replace(/&(amp|lt|gt|quot);/g, (_, n) => ({ amp: '&', lt: '<', gt: '>', quot: '"' }[n]));
@@ -1845,6 +1850,7 @@ function setupVoz() {
     rec.interimResults  = true;
     rec.maxAlternatives = 1;
 
+    let huboError = false;
     transcEl.textContent = '';
     statusEl.textContent = 'Escuchando...';
     micWrap.classList.add('escuchando');
@@ -1863,11 +1869,20 @@ function setupVoz() {
       }
     };
 
-    rec.onerror = () => vozCerrar();
+    /* Se deja el cuadro abierto con el motivo (antes se cerraba sin explicar); se sale con Cancelar. */
+    rec.onerror = e => {
+      console.error('Error de dictado:', e.error);
+      micWrap.classList.remove('escuchando');
+      if (e.error === 'no-speech') return;          /* lo explica onend */
+      huboError = true;
+      statusEl.textContent = (e.error === 'not-allowed' || e.error === 'service-not-allowed')
+        ? 'No hay permiso para usar el micrófono. Activalo en los ajustes del navegador.'
+        : 'No se pudo dictar. Revisá la conexión e intentá de nuevo.';
+    };
 
     rec.onend = () => {
       micWrap.classList.remove('escuchando');
-      if (overlay.classList.contains('active') && !transcEl.textContent) {
+      if (!huboError && overlay.classList.contains('active') && !transcEl.textContent) {
         statusEl.textContent = 'No se escuchó nada. Intentá de nuevo.';
       }
     };
@@ -1884,21 +1899,7 @@ function setupVoz() {
   function vozProcesar(texto) {
     statusEl.textContent = 'Procesando...';
 
-    const lower = texto.toLowerCase();
-
-    /* detectar urgencia */
-    let urgencia = 'media';
-    let sin = texto;
-    const mUrg = lower.match(/(?:urgencia\s+)?(alta|media|baja)(?:\s*$|,)/);
-    if (mUrg) {
-      urgencia = mUrg[1];
-      sin = texto.replace(new RegExp(mUrg[0], 'i'), '').replace(/,\s*$/, '').trim();
-    }
-
-    /* dividir por coma: primera parte = empresa, resto = descripción */
-    const partes = sin.split(',').map(p => p.trim()).filter(Boolean);
-    const empresa    = partes.length >= 2 ? partes[0] : '';
-    const descripcion = partes.length >= 2 ? partes.slice(1).join(', ') : (partes[0] || texto);
+    const { empresa, descripcion, urgencia } = parsearDictado(texto);
 
     setTimeout(() => {
       vozCerrar();
@@ -1920,6 +1921,35 @@ function setupVoz() {
   overlay.addEventListener('click', e => { if (e.target === overlay) vozCerrar(); });
 
   App.abrirVoz = vozAbrir;
+}
+
+/* Interpreta lo dictado: "Empresa, descripción, urgencia". La urgencia solo cuenta si es
+   la última parte entre comas (sola o como "urgencia alta") o si el texto termina en
+   "urgencia alta": así "dar de baja" o "dar de alta" dentro de la descripción no se tocan. */
+function parsearDictado(texto) {
+  const RE_PARTE_URG = /^(?:urgencia\s+)?(alta|media|baja)\.?$/i;
+  const RE_FINAL_URG = /\s+urgencia\s+(alta|media|baja)\.?\s*$/i;
+
+  let urgencia = 'media';
+  let sin = texto;
+  const partes0 = texto.split(',').map(p => p.trim()).filter(Boolean);
+  const mParte = partes0.length >= 2 && partes0[partes0.length - 1].match(RE_PARTE_URG);
+  const mFinal = !mParte && texto.match(RE_FINAL_URG);
+  if (mParte) {
+    urgencia = mParte[1].toLowerCase();
+    sin = partes0.slice(0, -1).join(', ');
+  } else if (mFinal) {
+    urgencia = mFinal[1].toLowerCase();
+    sin = texto.slice(0, mFinal.index).trim();
+  }
+
+  /* primera parte = empresa, resto = descripción */
+  const partes = sin.split(',').map(p => p.trim()).filter(Boolean);
+  return {
+    urgencia,
+    empresa:     partes.length >= 2 ? partes[0] : '',
+    descripcion: partes.length >= 2 ? partes.slice(1).join(', ') : (partes[0] || texto),
+  };
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -2146,7 +2176,8 @@ async function generarDOCX(tareas, usuario) {
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
-  } catch {
+  } catch (err) {
+    console.error('No se pudo generar el Word:', err);
     alert('Error al generar el archivo. Intentá de nuevo.');
   }
 }
@@ -2410,7 +2441,8 @@ function setupConfig() {
           reader.readAsText(file, 'utf-8');
         });
       }
-    } catch {
+    } catch (err) {
+      console.error('No se pudo importar el respaldo:', err);
       alert('El archivo no tiene un formato válido.');
     }
     e.target.value = '';

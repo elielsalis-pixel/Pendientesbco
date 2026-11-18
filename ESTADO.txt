@@ -19,7 +19,8 @@ QUÉ TIENE HOY
 - Reporte por mail (abre la app de correo del celular) y exportación a Word (.docx)
 - Importar respaldo (.json o .docx): se validan y limpian los datos; solo toma de él nombre y cargo; los mails del celular no se tocan
 - Aviso al abrir la app (y al guardar una tarea) si hay tareas vencidas o que vencen hoy. NO hay avisos a una hora fija ni "avisar antes": se quitaron el 2026-11-18 porque sin servidor de notificaciones el navegador no los garantiza.
-- Si el celular no deja guardar, la app avisa y deja el formulario abierto; si lo guardado está dañado, conserva una copia (clave pbc_tareas__danado) y avisa
+- Si el celular no deja guardar, la app avisa y deja el formulario abierto; si lo guardado está dañado (incluida una tarea con forma inválida), conserva una copia (clave pbc_tareas__danado) y avisa. Al importar, deja una copia de las tareas anteriores (pbc_tareas__previo). Ninguna de las dos copias se borra sola ni se puede restaurar desde la app todavía (solo con herramientas técnicas).
+- Dictado por voz: la urgencia se toma solo si es la última parte ("..., alta" o "urgencia alta"); si falla el micrófono, el cuadro muestra el motivo
 - PWA instalable; funciona sin conexión con la última copia guardada
 
 DATOS QUE GUARDA
@@ -35,8 +36,8 @@ SERVICIOS Y DEPENDENCIAS
 - Política de seguridad (_headers): solo permite scripts propios, los scripts en línea de la app y jsdelivr. Si algún día se agrega otro servicio externo, hay que sumarlo ahí.
 
 PRUEBAS
-- Se corren con: sh tests/verificar.sh (hace falta Node 20 o más nuevo). Última corrida: 46 de 46 pasan (2026-11-18).
-- Datos inventados ("Cliente Demo SA"). Cubren: chip de vencimiento, borrado a los 30 días, fechas y texto del reporte, aviso al abrir, guardado y datos dañados, importación, Word sin mails, service worker (red primero, sin conexión, red lenta, versiones viejas).
+- Se corren con: sh tests/verificar.sh (hace falta Node 20 o más nuevo). Última corrida: 65 de 65 pasan (2026-11-18).
+- Datos inventados ("Cliente Demo SA"). Cubren: dictado, datos dañados, chip de vencimiento, borrado a los 30 días, fechas y texto del reporte, aviso al abrir, guardado y datos dañados, importación, Word sin mails, service worker (red primero, sin conexión, red lenta, versiones viejas, wifi con página de ingreso, error del servidor).
 - No cubren: pantallas, voz, pantalla de configuración. Una prueba en Chromium real (2026-11-18, fuera del repo) confirmó que la política de seguridad no rompe la app, el alta de tareas, la descarga del Word, la importación, el uso sin conexión y la llegada de una versión nueva.
 - No se probó en un celular real.
 
@@ -56,6 +57,11 @@ PRÓXIMO PASO
 PENDIENTES (ideas nuevas: no se ejecutan hasta que la versión actual tenga un resultado real)
 - Una sección de urgencia que estuvo vacía queda plegada aunque después reciba tareas (comportamiento que ya tenía la app; cambia cómo se ve, necesita decisión).
 - Funciones largas (Word, configuración, reporte, voz): no se tocan sin pruebas de pantalla.
+- Texto de la notificación del sistema: hoy muestra empresa y descripción (se ve con el celular bloqueado). Recomendado: solo la cantidad. Necesita decisión.
+- El dictado por voz de Chrome probablemente envía el audio a Google (no verificado). Decidir si se avisa en pantalla.
+- Política de seguridad con 'unsafe-inline': quitarla exige reescribir los onclick de toda la app (trabajo aparte).
+- Primera apertura sin conexión: la app no queda guardada hasta la segunda carga con red.
+- Varios detalles menores de limpieza y pantalla (lista de la auditoría del 2026-11-18, vuelta 3).
 
 A CONFIRMAR
 - Chat de origen de la app: Eliel no lo recuerda (quizás lo borró). Se trabaja desde el código.

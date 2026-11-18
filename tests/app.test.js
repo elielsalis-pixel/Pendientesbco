@@ -484,7 +484,7 @@ test('lectura: si lo guardado se daña OTRA VEZ con otro contenido, se avisa de 
   const { app, almacen, avisos } = conAvisos();
   almacen.setItem('pbc_tareas', '{primero');
   ev(app, 'getTareas()');
-  almacen.setItem('pbc_tareas', '[{"id":"ok"}]');
+  almacen.setItem('pbc_tareas', JSON.stringify([tarea()]));
   assert.equal(ev(app, 'getTareas()').length, 1);
   almacen.setItem('pbc_tareas', '{segundo');
   ev(app, 'getTareas()');
@@ -524,4 +524,44 @@ test('importar: antes de reemplazar se guarda una copia de las tareas que había
   c.app.procesarRespaldo(respaldo([tarea({ id: 'nueva' })]));
   assert.deepEqual(c.almacen.leer('pbc_tareas').map(t => t.id), ['nueva']);
   assert.equal(c.almacen.getItem('pbc_tareas__previo'), crudoAntes);
+});
+
+test('lectura: una tarea guardada con forma inválida ([null], urgencia desconocida) cuenta como dato dañado y no rompe la pantalla', () => {
+  for (const raro of [[null], [tarea({ urgencia: 'urgente' })], [tarea({ estado: 'x' })], [tarea(), 5], [tarea({ empresa: 7 })]]) {
+    const { app, almacen, avisos } = conAvisos();
+    almacen.setItem('pbc_tareas', JSON.stringify(raro));
+    assert.deepEqual(plano(ev(app, 'getTareas()')), [], JSON.stringify(raro));
+    assert.equal(avisos.length, 1);
+    assert.equal(almacen.getItem('pbc_tareas__danado'), JSON.stringify(raro));
+  }
+});
+
+test('Word: los caracteres de control inválidos en XML (ej. U+000B al pegar de un PDF) se quitan; tab y salto de línea se conservan', () => {
+  const { app } = conAvisos();
+  assert.equal(app.escaparXML('texto\u000Bcon\u0000 y\u001F'), 'textocon y');
+  assert.equal(app.escaparXML('a\tb\nc'), 'a\tb\nc');
+});
+
+test('dictado: "alta", "baja" o "media" dentro de la descripción no se confunden con la urgencia', () => {
+  const { app } = conAvisos();
+  const p = t => plano(ev(app, `parsearDictado(${JSON.stringify(t)})`));
+  assert.deepEqual(p('Panadería Sol, dar de baja, la cuenta'),
+    { urgencia: 'media', empresa: 'Panadería Sol', descripcion: 'dar de baja, la cuenta' });
+  assert.deepEqual(p('Cliente Demo SA, revisar la falta'),
+    { urgencia: 'media', empresa: 'Cliente Demo SA', descripcion: 'revisar la falta' });
+  assert.deepEqual(p('Metalúrgica Sur, dar de alta cliente, alta'),
+    { urgencia: 'alta', empresa: 'Metalúrgica Sur', descripcion: 'dar de alta cliente' });
+});
+
+test('dictado: la urgencia al final (sola, con "urgencia" o con punto) se reconoce y se saca de la descripción', () => {
+  const { app } = conAvisos();
+  const p = t => plano(ev(app, `parsearDictado(${JSON.stringify(t)})`));
+  assert.deepEqual(p('Cliente Demo SA, llamar por la carpeta, urgencia baja'),
+    { urgencia: 'baja', empresa: 'Cliente Demo SA', descripcion: 'llamar por la carpeta' });
+  assert.deepEqual(p('Cliente Demo SA, llamar por la carpeta, Media.'),
+    { urgencia: 'media', empresa: 'Cliente Demo SA', descripcion: 'llamar por la carpeta' });
+  assert.deepEqual(p('Cliente Demo SA llamar por la carpeta urgencia alta'),
+    { urgencia: 'alta', empresa: '', descripcion: 'Cliente Demo SA llamar por la carpeta' });
+  assert.deepEqual(p('solo una frase sin comas'),
+    { urgencia: 'media', empresa: '', descripcion: 'solo una frase sin comas' });
 });

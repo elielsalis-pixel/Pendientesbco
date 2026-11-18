@@ -20,7 +20,8 @@ self.addEventListener('fetch', e => {
 
   let copiaGuardada = Promise.resolve();
   const deLaRed = fetch(e.request).then(res => {
-    if (res.ok) {
+    /* Una respuesta redirigida (ej. la página de ingreso de un wifi público) no es la app: no se guarda. */
+    if (res.ok && !res.redirected) {
       const copia = res.clone();
       copiaGuardada = caches.open(CACHE)
         .then(c => c.put(e.request, copia))
@@ -37,10 +38,13 @@ self.addEventListener('fetch', e => {
     new Promise((_, rechazar) => setTimeout(() => rechazar(new Error('red lenta')), ESPERA_RED_MS)),
   ]);
 
+  const copiaOLaRed = () => caches.match(e.request).then(guardada => guardada || deLaRed);
+
+  /* Si el servidor responde con error, se prefiere la última copia buena guardada. */
   e.respondWith(
-    conLimite.catch(() =>
-      caches.match(e.request).then(guardada => guardada || deLaRed)
-    )
+    conLimite
+      .then(res => (res.ok ? res : copiaOLaRed()))
+      .catch(copiaOLaRed)
   );
 });
 

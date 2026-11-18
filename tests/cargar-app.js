@@ -75,6 +75,7 @@ function crearFecha(ahoraMs) {
     tareas   -> lista guardada en pbc_tareas
     usuario  -> objeto guardado en pbc_usuario
     permiso  -> permiso de notificaciones: 'granted' (defecto), 'denied' o 'default'
+    JSZip    -> clase que reemplaza a la librería de zip (para probar el Word sin armar un zip real)
   Devuelve { app, almacen, llamadas }
 */
 function cargarApp(opciones = {}) {
@@ -107,7 +108,8 @@ function cargarApp(opciones = {}) {
       },
     },
     Notification: { permission: opciones.permiso ?? 'granted' },
-    crypto: { randomUUID: () => 'id-de-prueba' },
+    ...(opciones.JSZip ? { JSZip: opciones.JSZip } : {}),
+    crypto: { randomUUID: (() => { let n = 0; return () => `id-de-prueba-${++n}`; })() },
     URL: { createObjectURL: () => 'blob:prueba' },
     Blob: class {},
     alert() {},

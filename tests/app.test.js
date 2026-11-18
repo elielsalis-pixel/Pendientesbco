@@ -6,6 +6,7 @@
 */
 const test   = require('node:test');
 const assert = require('node:assert/strict');
+const vm = require('node:vm');
 const { cargarApp, plano, AHORA_POR_DEFECTO } = require('./cargar-app');
 
 const DIA = 24 * 60 * 60 * 1000;
@@ -98,12 +99,15 @@ test('purgarFinalizadas(): el límite es exacto (30 días justos se borra, un mi
   assert.deepEqual(ids, ['casi-30']);
 });
 
-test('purgarFinalizadas(): una tarea "listo" sin fecha de finalización se borra (comportamiento actual, a revisar en la auditoría)', () => {
-  const ids = tareasTrasPurgar([
+test('purgarFinalizadas(): una tarea "listo" sin fecha NO se borra: empieza a contar desde hoy', () => {
+  const { app, almacen } = cargarApp({ tareas: [
     tarea({ id: 'listo-sin-fecha', estado: 'listo', fechaFinalizado: null }),
     tarea({ id: 'activa' }),
-  ]);
-  assert.deepEqual(ids, ['activa']);
+  ] });
+  app.purgarFinalizadas();
+  const guardadas = almacen.leer('pbc_tareas');
+  assert.deepEqual(guardadas.map(t => t.id), ['listo-sin-fecha', 'activa']);
+  assert.equal(guardadas[0].fechaFinalizado, AHORA_POR_DEFECTO);
 });
 
 /* ───────────── Fechas del reporte ───────────── */
@@ -118,11 +122,11 @@ test('fechaISO(): devuelve el día de hoy en hora Argentina', () => {
   assert.equal(app.fechaISO(new Date(ARG(2026, 11, 18, 10, 30))), '2026-11-18');
 });
 
-test('fechaISO(): a las 22:30 de Argentina sigue siendo el mismo día', {
-  todo: 'Falla conocida: usa hora UTC, así que después de las 21:00 da el día siguiente (afecta el nombre del Word y la fecha del respaldo). Se arregla en la auditoría con OK de Eliel.',
-}, () => {
+test('fechaISO(): a las 22:30 de Argentina sigue siendo el mismo día (usa hora local, no UTC)', () => {
   const { app } = cargarApp();
   assert.equal(app.fechaISO(new Date(ARG(2026, 11, 18, 22, 30))), '2026-11-18');
+  assert.equal(app.fechaISO(new Date(ARG(2026, 11, 18, 23, 59))), '2026-11-18');
+  assert.equal(app.fechaISO(new Date(ARG(2026, 11, 19, 0, 1))),   '2026-11-19');
 });
 
 /* ───────────── Texto del mail ───────────── */
@@ -174,7 +178,7 @@ test('generarMailTexto(): sin cargo no agrega el separador "·"', () => {
 /* ───────────── Avisos de vencimiento ───────────── */
 async function correrAvisos({ tareas, usuario = { nombre: 'Usuario Demo', anticipacion: 0 }, permiso } = {}) {
   const { app, llamadas } = cargarApp({ tareas, usuario, permiso });
-  await app.programarNotificaciones();
+  await app.avisarVencimientos();
   return plano(llamadas);
 }
 
@@ -206,45 +210,208 @@ test('avisos: varias vencidas van en plural y la lista se corta en 3', async () 
   assert.equal(r.notificaciones[0].body.split('\n').filter(l => l.startsWith('·')).length, 3);
 });
 
-test('avisos: tarea de hoy a las 15:00 con anticipación de 30 min programa dos avisos en el service worker', async () => {
-  const r = await correrAvisos({
-    usuario: { nombre: 'Usuario Demo', anticipacion: 30 },
-    tareas: [tarea({ fechaVenc: '2026-11-18', horaVenc: '15:00' })],
-  });
-  assert.equal(r.mensajesSW.length, 1);
-  assert.equal(r.mensajesSW[0].type, 'SCHEDULE_NOTIFS');
-  const porTag = Object.fromEntries(r.mensajesSW[0].list.map(n => [n.tag, n]));
-  assert.equal(porTag['pbc-venc-t1'].at, ARG(2026, 11, 18, 15, 0));
-  assert.equal(porTag['pbc-venc-t1'].title, '⏰ Cliente Demo SA');
-  assert.equal(porTag['pbc-ant-t1'].at, ARG(2026, 11, 18, 14, 30));
-  assert.equal(porTag['pbc-ant-t1'].title, '⏰ Cliente Demo SA en 30 min');
-  assert.equal(r.mensajesSW[0].list.length, 2);
-});
-
-test('avisos: la anticipación se escribe en horas cuando es de 60 min o más', async () => {
-  const titulo = async min => (await correrAvisos({
-    usuario: { nombre: 'Usuario Demo', anticipacion: min },
-    tareas: [tarea({ fechaVenc: '2026-11-18', horaVenc: '15:00' })],
-  })).mensajesSW[0].list.find(n => n.tag === 'pbc-ant-t1').title;
-  assert.equal(await titulo(60),  '⏰ Cliente Demo SA en 1 hora');
-  assert.equal(await titulo(120), '⏰ Cliente Demo SA en 2 horas');
-});
-
-test('avisos: si la anticipación ya pasó, solo queda el aviso de la hora del vencimiento', async () => {
-  const r = await correrAvisos({
-    usuario: { nombre: 'Usuario Demo', anticipacion: 30 },
-    tareas: [tarea({ fechaVenc: '2026-11-18', horaVenc: '10:45' })],
-  });
-  assert.deepEqual(r.mensajesSW[0].list.map(n => n.tag), ['pbc-venc-t1']);
-});
-
-test('avisos: una hora de hoy que ya pasó no programa nada (solo el aviso inmediato)', async () => {
-  const r = await correrAvisos({ tareas: [tarea({ fechaVenc: '2026-11-18', horaVenc: '09:00' })] });
+test('avisos: una tarea de hoy con hora igual avisa al abrir y NO programa nada en el service worker', async () => {
+  const r = await correrAvisos({ tareas: [tarea({ fechaVenc: '2026-11-18', horaVenc: '15:00' })] });
   assert.equal(r.notificaciones.length, 1);
-  assert.equal(r.mensajesSW.length, 0);
+  assert.deepEqual(r.mensajesSW, []);
 });
 
-test('avisos: las horas de días futuros no se programan todavía', async () => {
+test('avisos: las tareas de días futuros no avisan todavía', async () => {
   const r = await correrAvisos({ tareas: [tarea({ fechaVenc: '2026-11-19', horaVenc: '15:00' })] });
   assert.deepEqual(r, { notificaciones: [], mensajesSW: [] });
+});
+
+/* ───────────── Guardado (#2) ───────────── */
+const ev = (app, codigo) => vm.runInContext(codigo, app);
+function conAvisos(opciones) {
+  const c = cargarApp(opciones);
+  const avisos = [];
+  c.app.alert = m => { avisos.push(m); };
+  return { ...c, avisos };
+}
+
+test('guardado: si el celular no deja guardar, devuelve false y avisa', () => {
+  const { app, almacen, avisos } = conAvisos();
+  almacen.setItem = () => { throw new Error('QuotaExceededError'); };
+  assert.equal(ev(app, 'saveTareas([])'), false);
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /No se pudo guardar/);
+});
+
+test('guardado: un fallo al guardar preferencias de pantalla (vista, secciones) no molesta con avisos', () => {
+  const { app, almacen, avisos } = conAvisos();
+  almacen.setItem = () => { throw new Error('QuotaExceededError'); };
+  assert.equal(ev(app, 'saveSecciones({ a: true })'), false);
+  assert.deepEqual(avisos, []);
+});
+
+test('guardado: si todo anda, devuelve true y guarda', () => {
+  const { app, almacen, avisos } = conAvisos();
+  assert.equal(ev(app, 'saveTareas([{ id: "a" }])'), true);
+  assert.deepEqual(almacen.leer('pbc_tareas'), [{ id: 'a' }]);
+  assert.deepEqual(avisos, []);
+});
+
+test('lectura: datos dañados se leen como lista vacía, se conserva una copia y se avisa una sola vez', () => {
+  const { app, almacen, avisos } = conAvisos();
+  almacen.setItem('pbc_tareas', '{esto-no-es-json');
+  assert.deepEqual(plano(ev(app, 'getTareas()')), []);
+  assert.deepEqual(plano(ev(app, 'getTareas()')), []);
+  assert.equal(almacen.getItem('pbc_tareas__danado'), '{esto-no-es-json');
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /dañados/);
+  /* el próximo guardado pisa lo dañado, pero la copia queda */
+  ev(app, 'saveTareas([{ id: "nueva" }])');
+  assert.equal(almacen.getItem('pbc_tareas__danado'), '{esto-no-es-json');
+});
+
+/* ───────────── Importar respaldo (#1) ───────────── */
+const respaldo = (tareas, usuario = { nombre: 'Usuario Demo', cargo: 'Oficial Demo' }) =>
+  JSON.stringify({ v: 1, fecha: '2026-11-18', usuario, tareas });
+
+function importar(contenido, opciones = {}) {
+  const c = conAvisos(opciones);
+  c.app.procesarRespaldo(contenido);
+  return { ...c, guardadas: c.almacen.leer('pbc_tareas') };
+}
+
+test('importar: datos hostiles se limpian y no llegan a la pantalla', () => {
+  const { app, guardadas } = importar(respaldo([
+    tarea({ id: 'a', urgencia: 'alta" onmouseover="alert(1)', estado: 'x" onclick="y',
+            fechaVenc: '2026-11-20', horaVenc: '<img src=x onerror=alert(1)>' }),
+  ]));
+  assert.equal(guardadas.length, 1);
+  assert.equal(guardadas[0].urgencia, 'media');
+  assert.equal(guardadas[0].estado, 'pendiente');
+  assert.equal(guardadas[0].horaVenc, '');
+  const html = app.cardHTML(guardadas[0]) + app.vencChip(guardadas[0]);
+  assert.doesNotMatch(html, /onmouseover|onclick="y|<img/);
+});
+
+test('importar: descarta lo que no sirve (sin empresa, sin descripción, no es un objeto) y avisa cuántas', () => {
+  let mensaje = '';
+  const c = cargarApp();
+  c.app.confirm = m => { mensaje = m; return true; };
+  c.app.alert = () => {};
+  c.app.procesarRespaldo(respaldo([
+    tarea({ id: 'ok' }),
+    tarea({ id: 'sin-empresa', empresa: '' }),
+    tarea({ id: 'sin-desc', descripcion: '   ' }),
+    null, 5, 'texto', { empresa: 5, descripcion: {} },
+  ]));
+  assert.deepEqual(c.almacen.leer('pbc_tareas').map(t => t.id), ['ok']);
+  assert.match(mensaje, /1 tarea\./);
+  assert.match(mensaje, /6 con datos inválidos/);
+});
+
+test('importar: normaliza fechas, horas y estados; completa lo que falta', () => {
+  const { guardadas } = importar(respaldo([
+    tarea({ id: 'a', fechaVenc: '2026-13-45', horaVenc: '15:00' }),
+    tarea({ id: 'b', fechaVenc: '2026-12-05', horaVenc: '25:99' }),
+    tarea({ id: 'c', fechaVenc: '2026-12-05', horaVenc: '15:00', estado: 'curso', nota: ' espera sello ' }),
+    tarea({ id: 'd', estado: 'listo', fechaFinalizado: undefined, nota: 'se ignora' }),
+    tarea({ id: 'e', estado: 'pendiente', nota: 'no corresponde' }),
+  ]));
+  const por = Object.fromEntries(guardadas.map(t => [t.id, t]));
+  assert.deepEqual([por.a.fechaVenc, por.a.horaVenc], ['', ''], 'fecha inválida: sin fecha ni hora');
+  assert.deepEqual([por.b.fechaVenc, por.b.horaVenc], ['2026-12-05', ''], 'hora inválida: se quita');
+  assert.deepEqual([por.c.fechaVenc, por.c.horaVenc, por.c.nota], ['2026-12-05', '15:00', 'espera sello']);
+  assert.equal(por.d.fechaFinalizado, AHORA_POR_DEFECTO);
+  assert.equal(por.d.nota, '');
+  assert.equal(por.e.nota, '');
+});
+
+test('importar: ids repetidos se regeneran y los tipos raros no rompen nada', () => {
+  const { guardadas } = importar(respaldo([
+    tarea({ id: 'igual' }), tarea({ id: 'igual' }), tarea({ id: 123 }),
+    tarea({ id: 'f', fechaVenc: ['2026-12-05'], fechaCreacion: 'ayer' }),
+  ]));
+  assert.equal(guardadas.length, 4);
+  assert.equal(new Set(guardadas.map(t => t.id)).size, 4);
+  assert.equal(guardadas[3].fechaVenc, '');
+  assert.equal(guardadas[3].fechaCreacion, AHORA_POR_DEFECTO);
+});
+
+test('importar: de los datos del usuario solo toma nombre y cargo; los mails actuales se conservan', () => {
+  const actual = { nombre: 'Nombre Viejo', cargo: 'Cargo Viejo', mailCorporativo: 'actual@example.com', mailPersonal: 'mio@example.com' };
+  const { almacen } = importar(
+    respaldo([tarea()], { nombre: 'Usuario Demo', cargo: 'Oficial Demo', mailCorporativo: 'otro@example.com', mailGerente: 'g@example.com' }),
+    { usuario: actual });
+  assert.deepEqual(almacen.leer('pbc_usuario'), {
+    nombre: 'Usuario Demo', cargo: 'Oficial Demo',
+    mailCorporativo: 'actual@example.com', mailPersonal: 'mio@example.com',
+  });
+});
+
+test('importar: en un celular sin configurar toma nombre y cargo y NO copia mails del archivo', () => {
+  const { almacen } = importar(
+    respaldo([tarea()], { nombre: 'Usuario Demo', cargo: 'Oficial Demo', mailPersonal: 'x@example.com' }));
+  assert.deepEqual(almacen.leer('pbc_usuario'), { nombre: 'Usuario Demo', cargo: 'Oficial Demo' });
+});
+
+test('importar: un archivo que no es un respaldo da error y no toca lo guardado', () => {
+  const c = conAvisos({ tareas: [tarea({ id: 'previa' })] });
+  assert.throws(() => c.app.procesarRespaldo('esto no es json'));
+  assert.throws(() => c.app.procesarRespaldo('{"tareas": 5}'));
+  assert.deepEqual(c.almacen.leer('pbc_tareas').map(t => t.id), ['previa']);
+});
+
+test('importar: si no se puede guardar, no reemplaza el usuario ni avisa "importada correctamente"', () => {
+  const c = conAvisos({ usuario: { nombre: 'Viejo', cargo: '' } });
+  c.almacen.setItem = () => { throw new Error('QuotaExceededError'); };
+  c.app.procesarRespaldo(respaldo([tarea()]));
+  assert.equal(c.avisos.length, 1);
+  assert.match(c.avisos[0], /No se pudo guardar/);
+  assert.equal(c.almacen.leer('pbc_usuario').nombre, 'Viejo');
+});
+
+/* ───────────── Word (#3): el respaldo oculto no lleva mails ───────────── */
+function jszipFalso() {
+  const archivos = {};
+  class Carpeta {
+    constructor(prefijo) { this.prefijo = prefijo; }
+    file(nombre, contenido) { archivos[this.prefijo + nombre] = contenido; return this; }
+    folder(nombre) { return new Carpeta(this.prefijo + nombre + '/'); }
+    async generateAsync() { return 'blob-falso'; }
+  }
+  return { archivos, JSZip: class extends Carpeta { constructor() { super(''); } } };
+}
+
+const USUARIO_CON_MAILS = {
+  nombre: 'Usuario Demo', cargo: 'Oficial Demo',
+  mailCorporativo: 'corp@example.com', mailPersonal: 'personal@example.com', mailGerente: 'gerente@example.com',
+};
+
+test('Word: el respaldo oculto lleva nombre y cargo, y ningún mail', async () => {
+  const falso = jszipFalso();
+  const { app } = cargarApp({ JSZip: falso.JSZip });
+  await app.generarDOCX([tarea({ id: 'a' })], USUARIO_CON_MAILS);
+  const custom = falso.archivos['docProps/custom.xml'];
+  assert.ok(custom, 'se generó docProps/custom.xml');
+  assert.doesNotMatch(custom, /example\.com|mail(Corporativo|Personal|Gerente)/);
+  assert.match(custom, /Usuario Demo/);
+  assert.match(custom, /PendientesBackup/);
+});
+
+test('Word: ida y vuelta — lo exportado se puede importar y los mails del celular siguen intactos', async () => {
+  const falso = jszipFalso();
+  const origen = cargarApp({ JSZip: falso.JSZip, usuario: USUARIO_CON_MAILS });
+  await origen.app.generarDOCX([tarea({ id: 'a', empresa: 'Cliente Demo SA' })], USUARIO_CON_MAILS);
+  const xml  = falso.archivos['docProps/custom.xml'];
+  const json = /<vt:lpwstr>([\s\S]*?)<\/vt:lpwstr>/.exec(xml)[1]
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+
+  const destino = conAvisos({ usuario: USUARIO_CON_MAILS });
+  destino.app.procesarRespaldo(json);
+  assert.deepEqual(destino.almacen.leer('pbc_tareas').map(t => t.empresa), ['Cliente Demo SA']);
+  assert.deepEqual(destino.almacen.leer('pbc_usuario'), USUARIO_CON_MAILS);
+});
+
+test('Word: el nombre del archivo usa la fecha local (a las 22:30 sigue siendo el mismo día)', async () => {
+  const falso = jszipFalso();
+  const { app } = cargarApp({ JSZip: falso.JSZip, ahora: ARG(2026, 11, 18, 22, 30) });
+  const descargas = [];
+  app.document = { body: { appendChild() {}, removeChild() {} }, createElement: () => ({ click() { descargas.push(this.download); } }) };
+  await app.generarDOCX([], USUARIO_CON_MAILS);
+  assert.deepEqual(descargas, ['pendientes-2026-11-18.docx']);
 });

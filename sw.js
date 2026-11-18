@@ -1,5 +1,9 @@
-const CACHE = 'pbc-v7';
-const _timers = new Map();
+/* Subir este número en CADA cambio de index.html o sw.js: así el celular
+   descarta la copia vieja guardada. */
+const CACHE = 'pbc-v8';
+
+/* Si la red tarda más que esto, se muestra la copia guardada mientras tanto. */
+const ESPERA_RED_MS = 4000;
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -9,53 +13,29 @@ self.addEventListener('activate', e => e.waitUntil(
     .then(() => clients.claim())
 ));
 
+/* Red primero: siempre se intenta la versión nueva y se guarda una copia.
+   Sin conexión (o con red muy lenta) se usa la última copia guardada. */
 self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
+
+  const deLaRed = fetch(e.request).then(res => {
+    if (res.ok) {
+      const copia = res.clone();
+      caches.open(CACHE).then(c => c.put(e.request, copia));
+    }
+    return res;
+  });
+
+  const conLimite = Promise.race([
+    deLaRed,
+    new Promise((_, rechazar) => setTimeout(() => rechazar(new Error('red lenta')), ESPERA_RED_MS)),
+  ]);
+
   e.respondWith(
-    caches.open(CACHE).then(cache =>
-      cache.match(e.request).then(r => r || fetch(e.request).then(res => {
-        if (res.ok) cache.put(e.request, res.clone());
-        return res;
-      }))
+    conLimite.catch(() =>
+      caches.match(e.request).then(guardada => guardada || deLaRed)
     )
   );
-});
-
-/* Recibe la lista de notificaciones programadas desde la página.
-   Usa setTimeout en el SW + waitUntil para seguir vivo en background. */
-self.addEventListener('message', e => {
-  if (e.data?.type !== 'SCHEDULE_NOTIFS') return;
-
-  _timers.forEach(id => clearTimeout(id));
-  _timers.clear();
-
-  const now     = Date.now();
-  const pending = [];
-
-  for (const n of (e.data.list || [])) {
-    const delay = n.at - now;
-    if (delay < -60000) continue;
-
-    const p = new Promise(resolve => {
-      const id = setTimeout(async () => {
-        const cs = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-        try {
-          await self.registration.showNotification(n.title, {
-            body:               n.body,
-            tag:                n.tag,
-            requireInteraction: false,
-          });
-          for (const c of cs) c.postMessage({ type: 'NOTIF_FIRED', title: n.title, body: n.body });
-        } catch (err) {
-          for (const c of cs) c.postMessage({ type: 'NOTIF_ERROR', message: String(err) });
-        }
-        resolve();
-      }, Math.max(0, delay));
-      _timers.set(n.tag, id);
-    });
-    pending.push(p);
-  }
-
-  if (pending.length) e.waitUntil(Promise.all(pending));
 });
 
 self.addEventListener('notificationclick', e => {

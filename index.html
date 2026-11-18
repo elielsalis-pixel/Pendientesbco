@@ -10,6 +10,8 @@
   <title>Pendientes · Credicoop</title>
   <link id="pwa-manifest" rel="manifest">
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" async
+          integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG"
+          crossorigin="anonymous"
           onload="document.dispatchEvent(new Event('docxListo'))"
           onerror="document.dispatchEvent(new Event('docxError'))"></script>
 
@@ -502,10 +504,6 @@
     .seg-btn.est-pendiente.active { background: var(--chip-bg);  color: var(--chip-txt);  border-color: #bbb;    }
     .seg-btn.est-curso.active     { background: var(--amber-bg); color: var(--amber-txt); border-color: #e0b870; }
     .seg-btn.est-listo.active     { background: #e6f5ee;          color: #1a7a3e;          border-color: #90ccaa; }
-
-    /* Anticipación — activo (neutro) */
-    .seg-btn.ant-btn.active { background: var(--gray); color: #fff; border-color: var(--gray); }
-    .seg-btn.ant-btn        { font-size: 11px; }
 
     /* ── BOTONES DEL MODAL ── */
     .m-btn-guardar {
@@ -1087,18 +1085,6 @@
     <div class="cfg-section">
       <div class="cfg-sec-title">Notificaciones</div>
       <div class="cfg-field">
-        <label class="cfg-label">Avisar antes del vencimiento
-          <span class="cfg-opt">(solo si tiene hora)</span>
-        </label>
-        <div class="seg" id="cfg-anticipacion">
-          <button class="seg-btn ant-btn" data-val="0">Ninguna</button>
-          <button class="seg-btn ant-btn" data-val="15">15 min</button>
-          <button class="seg-btn ant-btn" data-val="30">30 min</button>
-          <button class="seg-btn ant-btn" data-val="60">1 hora</button>
-          <button class="seg-btn ant-btn" data-val="120">2 horas</button>
-        </div>
-      </div>
-      <div class="cfg-field" style="margin-top:10px">
         <button class="cfg-btn-notif" id="cfg-btn-notif">🔔 Activar notificaciones</button>
         <p id="cfg-notif-status" class="cfg-notif-status"></p>
       </div>
@@ -1233,19 +1219,42 @@ const SK = {
 };
 
 const LS = {
+  /* Si lo guardado está dañado, se conserva una copia (clave + "__danado")
+     antes de que el próximo guardado lo pise, y se avisa una sola vez. */
   get(k, def = null) {
-    try { const v = localStorage.getItem(k); return v === null ? def : JSON.parse(v); }
+    let v;
+    try { v = localStorage.getItem(k); }
     catch { return def; }
+    if (v === null) return def;
+    try { return JSON.parse(v); }
+    catch {
+      try {
+        if (localStorage.getItem(k + '__danado') === null) {
+          localStorage.setItem(k + '__danado', v);
+          alert('Los datos guardados en este celular estaban dañados y no se pudieron leer. ' +
+                'Se conservó una copia aparte antes de seguir.');
+        }
+      } catch { /* sin espacio o sin permiso: ya se muestra el aviso de guardado */ }
+      return def;
+    }
   },
-  set(k, v) {
-    try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+  /* Devuelve true si se guardó. Con avisar=true, un fallo se le muestra al usuario. */
+  set(k, v, avisar = false) {
+    try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+    catch {
+      if (avisar) {
+        alert('No se pudo guardar en este celular (puede estar sin espacio). ' +
+              'Los últimos cambios NO quedaron guardados.');
+      }
+      return false;
+    }
   },
 };
 
 const getTareas    = ()  => LS.get(SK.tareas, []);
-const saveTareas   = (t) => LS.set(SK.tareas, t);
+const saveTareas   = (t) => LS.set(SK.tareas, t, true);
 const getUsuario   = ()  => LS.get(SK.usuario, null);
-const saveUsuario  = (u) => LS.set(SK.usuario, u);
+const saveUsuario  = (u) => LS.set(SK.usuario, u, true);
 const getVista     = ()  => LS.get(SK.vista, 'urgencia');
 const saveVista    = (v) => LS.set(SK.vista, v);
 const getSecciones = ()  => LS.get(SK.secciones, {});
@@ -1264,11 +1273,19 @@ function purgarFinalizadas() {
   const LIMITE = 30 * 24 * 60 * 60 * 1000;
   const ahora  = Date.now();
   const antes  = getTareas();
-  const despues = antes.filter(t =>
-    t.estado !== 'listo' ||
-    (t.fechaFinalizado && (ahora - t.fechaFinalizado) < LIMITE)
+
+  /* Una tarea terminada sin fecha de finalización no se borra: empieza a contar desde hoy. */
+  let completada = false;
+  const conFecha = antes.map(t => {
+    if (t.estado !== 'listo' || t.fechaFinalizado) return t;
+    completada = true;
+    return { ...t, fechaFinalizado: ahora };
+  });
+
+  const despues = conFecha.filter(t =>
+    t.estado !== 'listo' || (ahora - t.fechaFinalizado) < LIMITE
   );
-  if (despues.length !== antes.length) saveTareas(despues);
+  if (completada || despues.length !== antes.length) saveTareas(despues);
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1312,7 +1329,9 @@ function injectManifest() {
 ════════════════════════════════════════════════════════════ */
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  navigator.serviceWorker.register('./sw.js').catch(err =>
+    console.error('No se pudo registrar el service worker (la app no andará sin conexión):', err)
+  );
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1346,7 +1365,7 @@ function vencChip(t) {
 
   const dd = String(ad).padStart(2, '0');
   const mm = String(am).padStart(2, '0');
-  const label = t.horaVenc ? `${dd}/${mm} · ${t.horaVenc}` : `${dd}/${mm}`;
+  const label = t.horaVenc ? `${dd}/${mm} · ${esc(t.horaVenc)}` : `${dd}/${mm}`;
 
   let clase;
   if (diffD < 0) {
@@ -1373,7 +1392,7 @@ function cardHTML(t) {
   const tachado = t.estado === 'listo' ? ' tachado' : '';
   const nota    = (t.estado === 'curso' && t.nota)
     ? `<span class="task-nota">${esc(t.nota)}</span>` : '';
-  return `<div class="task-card ${t.urgencia} ${t.estado}" onclick="App.editarTarea(${qa(t.id)})">
+  return `<div class="task-card ${esc(t.urgencia)} ${esc(t.estado)}" onclick="App.editarTarea(${qa(t.id)})">
   <div class="task-empresa">${esc(t.empresa)}</div>
   <div class="task-desc${tachado}">${esc(t.descripcion)}</div>
   <div class="task-foot">
@@ -1388,6 +1407,27 @@ function emptyMain() {
   return `<div class="empty-main">
   <div class="empty-icon">📋</div>
   <p>No hay tareas activas.<br>Tocá <strong>+ Agregar tarea</strong> para empezar.</p>
+</div>`;
+}
+
+/* Sección "Finalizadas" (colapsada por defecto), común a las vistas por urgencia y por empresa. */
+function renderFinalizadas(tareas, secciones) {
+  const fin = tareas.filter(t => t.estado === 'listo');
+  if (!fin.length) return '';
+
+  const FIN_KEY = '__fin__';
+  if (!(FIN_KEY in secciones)) secciones[FIN_KEY] = true;
+  const abierta = !secciones[FIN_KEY];
+
+  return `<div class="fin-section">
+  <div class="sec-hdr" onclick="App.toggleSec(${qa(FIN_KEY)})">
+    <span class="sec-arrow${abierta ? '' : ' closed'}">▼</span>
+    <span class="sec-label" style="color:#aaa">Finalizadas</span>
+    <span class="sec-badge badge-neutral">${fin.length}</span>
+  </div>
+  <div class="sec-body" style="max-height:${abierta ? '9999px' : '0'}">
+    ${fin.map(cardHTML).join('')}
+  </div>
 </div>`;
 }
 
@@ -1411,23 +1451,7 @@ function renderUrgencia(tareas, secciones) {
 </div>`;
   }).join('');
 
-  /* ── sección finalizadas ── */
-  const fin = tareas.filter(t => t.estado === 'listo');
-  const FIN_KEY = '__fin__';
-  if (!(FIN_KEY in secciones)) secciones[FIN_KEY] = true; /* colapsada por defecto */
-  const finAbierta = !secciones[FIN_KEY];
-  const finSection = fin.length ? `<div class="fin-section">
-  <div class="sec-hdr" onclick="App.toggleSec(${qa(FIN_KEY)})">
-    <span class="sec-arrow${finAbierta ? '' : ' closed'}">▼</span>
-    <span class="sec-label" style="color:#aaa">Finalizadas</span>
-    <span class="sec-badge badge-neutral">${fin.length}</span>
-  </div>
-  <div class="sec-body" style="max-height:${finAbierta ? '9999px' : '0'}">
-    ${fin.map(cardHTML).join('')}
-  </div>
-</div>` : '';
-
-  return activo + finSection;
+  return activo + renderFinalizadas(tareas, secciones);
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1459,23 +1483,7 @@ function renderEmpresa(tareas, secciones) {
       }).join('')
     : emptyMain();
 
-  /* ── sección finalizadas ── */
-  const fin = tareas.filter(t => t.estado === 'listo');
-  const FIN_KEY = '__fin__';
-  if (!(FIN_KEY in secciones)) secciones[FIN_KEY] = true; /* colapsada por defecto */
-  const finAbierta = !secciones[FIN_KEY];
-  const finSection = fin.length ? `<div class="fin-section">
-  <div class="sec-hdr" onclick="App.toggleSec(${qa(FIN_KEY)})">
-    <span class="sec-arrow${finAbierta ? '' : ' closed'}">▼</span>
-    <span class="sec-label" style="color:#aaa">Finalizadas</span>
-    <span class="sec-badge badge-neutral">${fin.length}</span>
-  </div>
-  <div class="sec-body" style="max-height:${finAbierta ? '9999px' : '0'}">
-    ${fin.map(cardHTML).join('')}
-  </div>
-</div>` : '';
-
-  return activo + finSection;
+  return activo + renderFinalizadas(tareas, secciones);
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1695,16 +1703,17 @@ function modalGuardar() {
     });
   }
 
-  saveTareas(tareas);
+  /* Si no se pudo guardar, el formulario queda abierto para no perder lo escrito. */
+  if (!saveTareas(tareas)) return;
   modalCerrar();
   App.render();
-  programarNotificaciones();
+  avisarVencimientos();
 }
 
 /* ── eliminar ── */
 function modalEliminar() {
   if (!_editId || !confirm('¿Eliminar esta tarea?')) return;
-  saveTareas(getTareas().filter(t => t.id !== _editId));
+  if (!saveTareas(getTareas().filter(t => t.id !== _editId))) return;
   modalCerrar();
   App.render();
 }
@@ -1896,6 +1905,13 @@ function setupVoz() {
 /* ════════════════════════════════════════════════════════════
    REPORTE — UTILIDADES DE FECHA
 ════════════════════════════════════════════════════════════ */
+/* Niveles de urgencia, de mayor a menor: los usan el mail y el Word. */
+const NIVELES_URGENCIA = [
+  { key: 'alta',  label: 'ALTA',  color: 'C8102E' },
+  { key: 'media', label: 'MEDIA', color: 'FF6600' },
+  { key: 'baja',  label: 'BAJA',  color: '009A44' },
+];
+
 const DIAS   = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES  = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
                 'septiembre','octubre','noviembre','diciembre'];
@@ -1904,8 +1920,10 @@ function fechaLarga(d = new Date()) {
   return `${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]} de ${d.getFullYear()}`;
 }
 
+/* Fecha local del celular (AAAA-MM-DD), no la de UTC. */
 function fechaISO(d = new Date()) {
-  return d.toISOString().slice(0, 10);
+  const dos = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${dos(d.getMonth() + 1)}-${dos(d.getDate())}`;
 }
 
 function generarAsunto() {
@@ -1926,14 +1944,8 @@ function generarMailTexto(tareas, usuario) {
   lineas.push(`${usuario.nombre}${usuario.cargo ? ' · ' + usuario.cargo : ''}`);
 
   /* ── Tareas por urgencia (solo niveles con tareas) ── */
-  const NIVELES = [
-    { key: 'alta',  label: 'ALTA'  },
-    { key: 'media', label: 'MEDIA' },
-    { key: 'baja',  label: 'BAJA'  },
-  ];
-
   let hayTareas = false;
-  for (const { key, label } of NIVELES) {
+  for (const { key, label } of NIVELES_URGENCIA) {
     const items = activas.filter(t => t.urgencia === key);
     if (!items.length) continue;
     hayTareas = true;
@@ -1959,166 +1971,6 @@ function generarMailTexto(tareas, usuario) {
   }
 
   return lineas.join('\n');
-}
-
-/* ════════════════════════════════════════════════════════════
-   REPORTE — HTML (conservado para generación DOCX / impresión)
-════════════════════════════════════════════════════════════ */
-function generarMailHTML(tareas, usuario) {
-  const activas  = tareas.filter(t => t.estado !== 'listo');
-  const urgentes = activas.filter(t => t.urgencia === 'alta');
-  const enCurso  = activas.filter(t => t.estado  === 'curso');
-
-  const respaldoJSON = JSON.stringify({
-    v: 1,
-    fecha: fechaISO(),
-    usuario,
-    tareas,
-  });
-
-  /* ── tarjetas por urgencia ── */
-  const NIVELES = [
-    { key:'alta',  label:'ALTA',  color:'#C8102E', bg:'#fff8f8', borde:'#C8102E', bw:'4px solid #000' },
-    { key:'media', label:'MEDIA', color:'#FF6600', bg:'#fff9f5', borde:'#FF6600', bw:'2px solid #000' },
-    { key:'baja',  label:'BAJA',  color:'#009A44', bg:'#f5fbf7', borde:'#009A44', bw:'1px dashed #000' },
-  ];
-
-  const bloquesTareas = NIVELES.map(({ key, label, color, bg, borde, bw }) => {
-    const items = activas.filter(t => t.urgencia === key);
-    if (!items.length) return '';
-
-    const tarjetas = items.map(t => {
-      const chipBg  = t.estado === 'curso' ? '#FAEEDA' : '#f0f0f0';
-      const chipTxt = t.estado === 'curso' ? '#854F0B' : '#555555';
-      const chipLbl = { pendiente:'Pendiente', curso:'En curso' }[t.estado] || t.estado;
-      const nota    = (t.estado === 'curso' && t.nota)
-        ? `&nbsp;&nbsp;<span style="font-size:12px;font-style:italic;color:#777;">${esc(t.nota)}</span>` : '';
-      return `<table width="100%" cellpadding="0" cellspacing="0" border="0"
-        class="task-${key}" style="margin-bottom:8px;">
-  <tr>
-    <td style="border-left:4px solid ${borde};padding:10px 12px;background:${bg};
-               font-family:Arial,Helvetica,sans-serif;">
-      <p style="font-size:10px;font-weight:bold;color:#6a6e66;text-transform:uppercase;
-                letter-spacing:0.5px;margin:0 0 3px 0;">${esc(t.empresa)}</p>
-      <p style="font-size:14px;color:#222;line-height:1.4;margin:0 0 7px 0;">${esc(t.descripcion)}</p>
-      <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;
-                   background:${chipBg};color:${chipTxt};">${chipLbl}</span>${nota}
-    </td>
-  </tr>
-</table>`;
-    }).join('');
-
-    return `<table width="100%" cellpadding="0" cellspacing="0" border="0">
-  <tr><td style="padding:4px 0 6px;">
-    <p style="font-size:11px;font-weight:bold;color:${color};text-transform:uppercase;
-              letter-spacing:1px;margin:0;font-family:Arial,Helvetica,sans-serif;">${label}</p>
-  </td></tr>
-  <tr><td>${tarjetas}</td></tr>
-</table>`;
-  }).join('');
-
-  /* ── CSS de impresión embebido ── */
-  const printCSS = `<style>
-@media print {
-  .rpt-backup,.rpt-footer { display:none !important; }
-  body { font-family:Georgia,serif !important; background:#fff !important; }
-  table td { background:#fff !important; }
-  .task-alta  td { border-left:4px solid #000 !important; }
-  .task-media td { border-left:2px solid #000 !important; }
-  .task-baja  td { border-left:1px dashed #000 !important; }
-  @page {
-    size: Letter;
-    margin: 2cm 1.5cm;
-    @top-left   { content: "Banco Credicoop Coop. Ltdo. · Pyme  —  ${esc(usuario.nombre).replace(/"/g, '')}"; font-size:9pt; color:#666; }
-    @top-right  { content: "${esc(fechaLarga()).replace(/"/g, '')}"; font-size:9pt; color:#666; }
-    @bottom-right { content: "Página " counter(page) " de " counter(pages); font-size:9pt; color:#999; }
-  }
-}
-</style>`;
-
-  return `<!DOCTYPE html>
-<html lang="es">
-<head><meta charset="UTF-8">${printCSS}</head>
-<body style="margin:0;padding:20px;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center">
-<table width="600" cellpadding="0" cellspacing="0" border="0"
-       style="background:#fff;max-width:600px;font-family:Arial,Helvetica,sans-serif;">
-
-  <!-- BLQ 1: HEADER -->
-  <tr>
-    <td style="background:#6a6e66;padding:20px 24px;">
-      <p style="color:#fff;font-size:18px;font-weight:bold;margin:0;letter-spacing:0.2px;">
-        Banco Credicoop Coop. Ltdo. &middot; Pyme</p>
-      <p style="color:rgba(255,255,255,0.82);font-size:13px;margin:5px 0 0;">
-        ${esc(usuario.nombre)}${usuario.cargo ? ' &nbsp;&middot;&nbsp; ' + esc(usuario.cargo) : ''}</p>
-    </td>
-  </tr>
-  <tr><td style="background:#C8102E;height:3px;font-size:0;line-height:0;">&nbsp;</td></tr>
-
-  <!-- BLQ 2: RESUMEN -->
-  <tr>
-    <td style="padding:20px 24px;border-bottom:1px solid #f0f0f0;">
-      <table width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-          <td style="text-align:center;padding:0 8px;border-right:1px solid #e8e8e8;">
-            <p style="font-size:32px;font-weight:bold;color:#333;margin:0;">${activas.length}</p>
-            <p style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 0;">Tareas activas</p>
-          </td>
-          <td style="text-align:center;padding:0 8px;border-right:1px solid #e8e8e8;">
-            <p style="font-size:32px;font-weight:bold;color:#C8102E;margin:0;">${urgentes.length}</p>
-            <p style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 0;">Urgentes</p>
-          </td>
-          <td style="text-align:center;padding:0 8px;">
-            <p style="font-size:32px;font-weight:bold;color:#FF6600;margin:0;">${enCurso.length}</p>
-            <p style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 0;">En curso</p>
-          </td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-
-  <!-- BLQ 3: TAREAS -->
-  <tr>
-    <td style="padding:16px 24px;">
-      ${bloquesTareas || '<p style="color:#ccc;font-size:14px;text-align:center;padding:20px 0;">Sin tareas activas</p>'}
-    </td>
-  </tr>
-
-  <!-- BLQ 4: RESPALDO (colapsado, oculto al imprimir) -->
-  <tr class="rpt-backup">
-    <td style="background:#f8f8f8;padding:4px 24px 12px;border-top:1px solid #e8e8e8;">
-      <details>
-        <summary style="font-size:12px;color:#bbb;padding:10px 0;cursor:pointer;
-                        list-style:none;-webkit-appearance:none;outline:none;
-                        user-select:none;">
-          &#9654; Ver respaldo técnico
-        </summary>
-        <div style="margin-top:6px;">
-          <p style="font-family:\'Courier New\',monospace;font-size:11px;color:#888;margin:0 0 6px;">
-            ═══ INICIO RESPALDO ═══</p>
-          <p style="font-family:\'Courier New\',monospace;font-size:10px;color:#999;
-                    word-break:break-all;white-space:pre-wrap;margin:0 0 6px;">${esc(respaldoJSON)}</p>
-          <p style="font-family:\'Courier New\',monospace;font-size:11px;color:#888;margin:0 0 10px;">
-            ═══ FIN RESPALDO ═══</p>
-          <p style="font-size:12px;color:#bbb;margin:0;line-height:1.5;">
-            Para recuperar tus tareas en otro celular: cop&iacute; el bloque entre las marcas
-            y us&aacute; &ldquo;Importar respaldo&rdquo; en la app.</p>
-        </div>
-      </details>
-    </td>
-  </tr>
-
-  <!-- BLQ 5: FOOTER -->
-  <tr class="rpt-footer">
-    <td style="background:#f0f0f0;padding:14px 24px;text-align:center;border-top:1px solid #e0e0e0;">
-      <p style="font-size:11px;color:#aaa;margin:0;">
-        Generado desde tu app de pendientes &nbsp;&middot;&nbsp; Cooperativo por convicción</p>
-    </td>
-  </tr>
-
-</table>
-</td></tr></table>
-</body></html>`;
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -2157,19 +2009,13 @@ async function generarDOCX(tareas, usuario) {
   body += p(`${usuario.nombre}${usuario.cargo ? '  ·  ' + usuario.cargo : ''}`, { bold:true, size:22, after:40 });
   body += p(fechaLarga(), { color:'888888', size:20, after:360 });
 
-  const NIVELES = [
-    { key:'alta',  label:'URGENCIA ALTA',  color:'C8102E' },
-    { key:'media', label:'URGENCIA MEDIA', color:'FF6600' },
-    { key:'baja',  label:'URGENCIA BAJA',  color:'009A44' },
-  ];
-
   let hayItems = false;
-  for (const { key, label, color } of NIVELES) {
+  for (const { key, label, color } of NIVELES_URGENCIA) {
     const items = activas.filter(t => t.urgencia === key);
     if (!items.length) continue;
     hayItems = true;
 
-    body += p(label, { bold:true, color, size:20, before:280, after:100 });
+    body += p(`URGENCIA ${label}`, { bold:true, color, size:20, before:280, after:100 });
 
     for (const t of items) {
       body += p(t.empresa.toUpperCase(), { bold:true, color:'6a6e66', size:18, indent:280, before:80, after:40 });
@@ -2187,8 +2033,13 @@ async function generarDOCX(tareas, usuario) {
   /* ── Armar el ZIP ── */
   const zip = new window.JSZip();
 
-  /* JSON de respaldo embebido en propiedades custom del docx */
-  const respaldoJSON = JSON.stringify({ v: 1, fecha: fechaISO(), usuario, tareas });
+  /* JSON de respaldo embebido en propiedades custom del docx.
+     Lleva solo nombre y cargo: los mails nunca viajan dentro del archivo. */
+  const respaldoJSON = JSON.stringify({
+    v: 1, fecha: fechaISO(),
+    usuario: { nombre: usuario.nombre, cargo: usuario.cargo },
+    tareas,
+  });
   const respaldoXMLesc = respaldoJSON
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -2421,7 +2272,6 @@ function setupConfig() {
     document.getElementById('cfg-mail-corp').value = u.mailCorporativo || '';
     document.getElementById('cfg-mail-pers').value = u.mailPersonal    || '';
     document.getElementById('cfg-mail-ger').value  = u.mailGerente     || '';
-    segSet('cfg-anticipacion', String(u.anticipacion ?? 0));
 
     /* limpiar validaciones previas */
     document.getElementById('cfg-nombre').classList.remove('invalid');
@@ -2461,24 +2311,17 @@ function setupConfig() {
       mailCorporativo: document.getElementById('cfg-mail-corp').value.trim(),
       mailPersonal:    document.getElementById('cfg-mail-pers').value.trim(),
       mailGerente:     document.getElementById('cfg-mail-ger').value.trim(),
-      anticipacion:    Number(segGet('cfg-anticipacion') ?? 0),
     });
     /* mostrar botón atrás ahora que hay nombre */
     backBtn.classList.remove('hidden');
     _primeraVez = false;
     cfgCerrar();
-    programarNotificaciones();
+    avisarVencimientos();
   });
 
   document.getElementById('cfg-nombre').addEventListener('input', () =>
     document.getElementById('cfg-nombre').classList.remove('invalid')
   );
-
-  /* segmentado anticipación */
-  document.getElementById('cfg-anticipacion').addEventListener('click', e => {
-    const btn = e.target.closest('.seg-btn');
-    if (btn) segSet('cfg-anticipacion', btn.dataset.val);
-  });
 
   /* notificaciones — botón de activación */
   function _updNotifBtn() {
@@ -2489,9 +2332,10 @@ function setupConfig() {
       btn.disabled = true;
       return;
     }
+    const aviso = 'Al abrir la app te avisamos si hay tareas vencidas o que vencen hoy.';
     if (Notification.permission === 'granted') {
       btn.textContent = '✅ Notificaciones activas';
-      st.textContent  = 'Las notificaciones están habilitadas.';
+      st.textContent  = aviso;
       st.className    = 'cfg-notif-status ok';
     } else if (Notification.permission === 'denied') {
       btn.textContent = '🚫 Bloqueado — ver cómo activar';
@@ -2499,7 +2343,7 @@ function setupConfig() {
       st.className    = 'cfg-notif-status';
     } else {
       btn.textContent = '🔔 Activar notificaciones';
-      st.textContent  = '';
+      st.textContent  = aviso;
       st.className    = 'cfg-notif-status';
     }
   }
@@ -2515,7 +2359,7 @@ function setupConfig() {
     }
     const perm = await Notification.requestPermission();
     _updNotifBtn();
-    if (perm === 'granted') programarNotificaciones();
+    if (perm === 'granted') avisarVencimientos();
   });
 
   document.getElementById('notif-instruc-bd').addEventListener('click', function(e) {
@@ -2560,14 +2404,68 @@ function procesarRespaldo(contenido) {
   const data = JSON.parse(jsonStr);
   if (!Array.isArray(data?.tareas)) throw new Error('sin tareas');
 
-  const n = data.tareas.length;
-  if (!confirm(`Se encontraron ${n} tarea${n !== 1 ? 's' : ''}.\n¿Importar y reemplazar las tareas actuales?`)) return;
+  const ahora = Date.now();
+  const ids   = new Set();
+  const tareas = [];
+  for (const cruda of data.tareas) {
+    const t = limpiarTarea(cruda, ahora);
+    if (!t) continue;
+    if (ids.has(t.id)) t.id = newId();
+    ids.add(t.id);
+    tareas.push(t);
+  }
 
-  saveTareas(data.tareas);
-  if (data.usuario) saveUsuario(data.usuario);
+  const n = tareas.length;
+  const descartadas = data.tareas.length - n;
+  const aviso = descartadas
+    ? `\n(${descartadas} con datos inválidos no se importan.)` : '';
+  if (!confirm(`Se encontraron ${n} tarea${n !== 1 ? 's' : ''}.${aviso}\n¿Importar y reemplazar las tareas actuales?`)) return;
+
+  if (!saveTareas(tareas)) return;
+  const usuario = mezclarUsuario(getUsuario(), data.usuario);
+  if (usuario) saveUsuario(usuario);
 
   App.render();
   alert(`${n} tarea${n !== 1 ? 's' : ''} importada${n !== 1 ? 's' : ''} correctamente.`);
+}
+
+/* ── Validación de lo que viene de un archivo importado ── */
+const RE_FECHA = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const RE_HORA  = /^([01]\d|2[0-3]):[0-5]\d$/;
+const esTexto  = v => typeof v === 'string';
+const esNumero = v => typeof v === 'number' && Number.isFinite(v);
+
+/* Devuelve la tarea con solo los campos conocidos y valores válidos, o null si no sirve. */
+function limpiarTarea(t, ahora) {
+  if (!t || typeof t !== 'object') return null;
+
+  const empresa     = esTexto(t.empresa)     ? t.empresa.trim()     : '';
+  const descripcion = esTexto(t.descripcion) ? t.descripcion.trim() : '';
+  if (!empresa || !descripcion) return null;
+
+  const estado    = ['pendiente', 'curso', 'listo'].includes(t.estado) ? t.estado : 'pendiente';
+  const urgencia  = ['alta', 'media', 'baja'].includes(t.urgencia)     ? t.urgencia : 'media';
+  const fechaVenc = esTexto(t.fechaVenc) && RE_FECHA.test(t.fechaVenc) ? t.fechaVenc : '';
+  const horaVenc  = fechaVenc && esTexto(t.horaVenc) && RE_HORA.test(t.horaVenc) ? t.horaVenc : '';
+
+  return {
+    id: esTexto(t.id) && t.id ? t.id : newId(),
+    empresa, descripcion, urgencia, estado,
+    nota: estado === 'curso' && esTexto(t.nota) ? t.nota.trim() : '',
+    fechaVenc, horaVenc,
+    fechaCreacion:   esNumero(t.fechaCreacion) ? t.fechaCreacion : ahora,
+    fechaFinalizado: estado === 'listo'
+      ? (esNumero(t.fechaFinalizado) ? t.fechaFinalizado : ahora)
+      : null,
+  };
+}
+
+/* Del archivo solo se toman nombre y cargo; los mails y demás ajustes quedan como están. */
+function mezclarUsuario(actual, importado) {
+  const nombre = esTexto(importado?.nombre) ? importado.nombre.trim() : '';
+  const cargo  = esTexto(importado?.cargo)  ? importado.cargo.trim()  : '';
+  if (!actual) return nombre ? { nombre, cargo } : null;
+  return { ...actual, nombre: nombre || actual.nombre, cargo: cargo || actual.cargo || '' };
 }
 
 async function procesarRespaldoDOCX(file) {
@@ -2607,31 +2505,16 @@ function mostrarToastNotif(title, body) {
   _toastTimer = setTimeout(() => el.classList.remove('visible'), 5000);
 }
 
-/* Escucha mensajes del SW */
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('message', e => {
-    if (e.data?.type === 'NOTIF_FIRED') {
-      /* Toast solo si la app está en primer plano — el sistema ya muestra la notificación si está en background */
-      if (document.visibilityState === 'visible') {
-        mostrarToastNotif(e.data.title, e.data.body);
-      }
-    } else if (e.data?.type === 'NOTIF_ERROR') {
-      mostrarToastNotif('⚠️ Error de notificación', e.data.message);
-    }
-  });
-}
-
-async function programarNotificaciones() {
+/* Al abrir la app (y al guardar una tarea) avisa si hay tareas vencidas o que vencen hoy.
+   No hay avisos a una hora fija: sin un servidor de notificaciones el navegador no los garantiza. */
+async function avisarVencimientos() {
   if (!('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
 
   const tareas = getTareas().filter(t => t.estado !== 'listo' && t.fechaVenc);
   if (!tareas.length) return;
 
-  const ahora        = new Date();
-  const hoy          = new Date(); hoy.setHours(0, 0, 0, 0);
-  const u            = getUsuario() || {};
-  const anticipacion = Number(u.anticipacion ?? 0);
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
 
   /* Obtener registration con timeout — si el SW no responde en 4s, reporta */
   let reg = null;
@@ -2648,68 +2531,25 @@ async function programarNotificaciones() {
   }
   if (!reg) return;
 
-  /* ── A: notificación inmediata — vencidas o vencen hoy ── */
+  /* vencidas o que vencen hoy */
   const urgentes = tareas.filter(t => {
     const [y, m, d] = t.fechaVenc.split('-').map(Number);
     return new Date(y, m - 1, d) <= hoy;
   });
+  if (!urgentes.length) return;
 
-  if (urgentes.length) {
-    const n     = urgentes.length;
-    const lista = urgentes.slice(0, 3).map(t => `· ${t.empresa}: ${t.descripcion}`).join('\n');
-    try {
-      await reg.showNotification('⏰ Pendientes · Vencimientos', {
-        body: `Tenés ${n} tarea${n !== 1 ? 's' : ''} vencida${n !== 1 ? 's' : ''} o que vence${n !== 1 ? 'n' : ''} hoy.\n${lista}`,
-        tag:  'pbc-apertura',
-      });
-      mostrarToastNotif('⏰ Pendientes · Vencimientos',
-        `${n} tarea${n !== 1 ? 's' : ''} con vencimiento hoy o anterior.`);
-    } catch (err) {
-      mostrarToastNotif('⚠️ Error notificación', String(err));
-    }
+  const n     = urgentes.length;
+  const lista = urgentes.slice(0, 3).map(t => `· ${t.empresa}: ${t.descripcion}`).join('\n');
+  try {
+    await reg.showNotification('⏰ Pendientes · Vencimientos', {
+      body: `Tenés ${n} tarea${n !== 1 ? 's' : ''} vencida${n !== 1 ? 's' : ''} o que vence${n !== 1 ? 'n' : ''} hoy.\n${lista}`,
+      tag:  'pbc-apertura',
+    });
+    mostrarToastNotif('⏰ Pendientes · Vencimientos',
+      `${n} tarea${n !== 1 ? 's' : ''} con vencimiento hoy o anterior.`);
+  } catch (err) {
+    mostrarToastNotif('⚠️ Error notificación', String(err));
   }
-
-  /* ── B: timers para tareas con hora hoy — van al SW ── */
-  const timerList = [];
-
-  tareas.forEach(t => {
-    if (!t.horaVenc) return;
-    const [y, m, d] = t.fechaVenc.split('-').map(Number);
-    if (new Date(y, m - 1, d) - hoy !== 0) return;
-
-    const [hh, mn] = t.horaVenc.split(':').map(Number);
-    const tsVenc   = new Date(y, m - 1, d, hh, mn, 0).getTime();
-    const msVenc   = tsVenc - ahora.getTime();
-
-    if (msVenc > 0) {
-      timerList.push({
-        at:    tsVenc,
-        title: `⏰ ${t.empresa}`,
-        body:  `${t.descripcion} — vence ahora.`,
-        tag:   `pbc-venc-${t.id}`,
-      });
-    }
-
-    if (anticipacion > 0) {
-      const tsAnt = tsVenc - anticipacion * 60000;
-      if (tsAnt > ahora.getTime()) {
-        const label = anticipacion >= 60
-          ? `${anticipacion / 60} hora${anticipacion / 60 !== 1 ? 's' : ''}`
-          : `${anticipacion} min`;
-        timerList.push({
-          at:    tsAnt,
-          title: `⏰ ${t.empresa} en ${label}`,
-          body:  `${t.descripcion} — vence a las ${t.horaVenc}.`,
-          tag:   `pbc-ant-${t.id}`,
-        });
-      }
-    }
-  });
-
-  if (!timerList.length) return;
-
-  const sw = navigator.serviceWorker.controller || reg.active;
-  if (sw) sw.postMessage({ type: 'SCHEDULE_NOTIFS', list: timerList });
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -2723,7 +2563,7 @@ function init() {
   setupConfig();
   setupReporte();
   App.render();
-  programarNotificaciones();
+  avisarVencimientos();
 
   /* primera vez sin nombre → redirigir a config */
   if (!getUsuario()?.nombre) App.abrirConfig(true);
